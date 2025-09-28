@@ -1267,21 +1267,11 @@ impl ProxyWsPing {
         let res: [u8; 48] = [0; 48];
         let mut cur = std::io::Cursor::new(res);
 
-        cur.write(self.id.as_bytes()).unwrap();
-        cur.write(self.connection_id.as_bytes()).unwrap();
-        cur.write(&self.timestamp.unix_timestamp_nanos().to_be_bytes()).unwrap();
+        let _ = cur.write(self.id.as_bytes());
+        let _ = cur.write(self.connection_id.as_bytes());
+        let _ = cur.write(&self.timestamp.unix_timestamp_nanos().to_be_bytes());
 
         cur.into_inner()
-    }
-}
-
-impl Default for ProxyWsPing {
-    fn default() -> Self {
-        Self {
-            id: Uuid::nil(),
-            connection_id: Uuid::nil(),
-            timestamp: UtcDateTime::from_unix_timestamp(1_546_300_800).unwrap(),
-        }
     }
 }
 
@@ -1296,7 +1286,7 @@ mod tests {
         {
             let pong = ProxyWsPing::from_bytes(ping.to_bytes());
             assert!(pong.is_some(), "must be some");
-            let pong = pong.unwrap();
+            let pong = pong.unwrap(); // safety: just verified
             assert!(pong == ping, "must be the same");
         }
 
@@ -1304,7 +1294,7 @@ mod tests {
             let slice = ping.to_slice();
             let pong = ProxyWsPing::from_bytes(Bytes::copy_from_slice(&slice));
             assert!(pong.is_some(), "must be some");
-            let pong = pong.unwrap();
+            let pong = pong.unwrap(); // safety: just verified
             assert!(pong == ping, "must be the same");
         }
     }

@@ -58,7 +58,11 @@ impl CircuitBreaker {
 
     #[inline]
     fn client(config: &ConfigCircuitBreaker) -> Client {
-        let host = config.url().host().unwrap().to_string();
+        let host = config
+            .url()
+            .host()
+            .unwrap() // safety: verified on start
+            .to_string();
         let timeout = Self::timeout(config);
 
         Client::builder()

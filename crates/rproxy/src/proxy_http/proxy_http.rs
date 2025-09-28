@@ -180,7 +180,7 @@ where
                 rustls::ServerConfig::builder()
                     .with_no_client_auth()
                     .with_single_cert(cert, key)
-                    .unwrap(),
+                    .unwrap(), // safety: verified on start
             )
         } else {
             proxy.listen(listener)
@@ -528,10 +528,8 @@ where
         return message;
 
         fn sanitise(message: &mut serde_json::Value) {
-            if message.is_array() {
-                // batch
-
-                for item in message.as_array_mut().unwrap() {
+            if let Some(batch) = message.as_array_mut() {
+                for item in batch {
                     sanitise(item);
                 }
                 return;
@@ -866,7 +864,10 @@ where
         connections_limit: usize,
         timeout: std::time::Duration,
     ) -> Self {
-        let host = url.host().unwrap().to_string();
+        let host = url
+            .host()
+            .unwrap() // safety: verified on start
+            .to_string();
 
         let client = Client::builder()
             .add_default_header((header::HOST, host))

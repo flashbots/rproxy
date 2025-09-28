@@ -14,9 +14,9 @@ impl valuable::Valuable for Loggable<'_> {
             serde_json::Value::Number(val) => {
                 // serde_json::Value::Number is always 1 of the these 3
                 if val.is_u64() {
-                    valuable::Value::U64(val.as_u64().unwrap())
+                    valuable::Value::U64(val.as_u64().unwrap()) // safety: just verified
                 } else if val.is_i64() {
-                    valuable::Value::I64(val.as_i64().unwrap())
+                    valuable::Value::I64(val.as_i64().unwrap()) // safety: just verified
                 } else {
                     valuable::Value::F64(
                         val.as_f64().expect("unexpected wrapped numeric type under the hood"),
