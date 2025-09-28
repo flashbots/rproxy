@@ -9,7 +9,7 @@ use tracing::warn;
 use url::Url;
 
 use crate::{
-    config::{ALREADY_VALIDATED, ConfigProxyHttp, PARALLELISM_STRING},
+    config::{ALREADY_VALIDATED, ConfigProxyHttp},
     utils::get_all_local_ip_addresses,
 };
 
@@ -30,7 +30,7 @@ pub(crate) struct ConfigAuthrpc {
 
     /// max concurrent requests per authrpc backend
     #[arg(
-        default_value = PARALLELISM_STRING.as_str(),
+        default_value = "1",
         env = "RPROXY_AUTHRPC_BACKEND_MAX_CONCURRENT_REQUESTS",
         help_heading = "authrpc",
         long("authrpc-backend-max-concurrent-requests"),
