@@ -1,0 +1,1245 @@
+use std::{
+    marker::PhantomData,
+    str::FromStr,
+    sync::{Arc, atomic::AtomicI64},
+};
+
+use actix::{Actor, AsyncContext, WrapFuture};
+use actix_web::{
+    App,
+    HttpRequest,
+    HttpResponse,
+    HttpResponseBuilder,
+    HttpServer,
+    body::BodySize,
+    http::header,
+    middleware::{NormalizePath, TrailingSlash},
+    web,
+};
+use awc::{
+    Client,
+    ClientRequest,
+    ClientResponse,
+    Connector,
+    body::MessageBody,
+    error::HeaderValue,
+    http::{Method, StatusCode, header::HeaderMap},
+};
+use bytes::Bytes;
+use futures::TryStreamExt;
+use scc::HashMap;
+use time::{UtcDateTime, format_description::well_known::Iso8601};
+use tokio::sync::broadcast;
+use tracing::{debug, error, info, warn};
+use url::Url;
+use uuid::Uuid;
+use x509_parser::asn1_rs::ToStatic;
+
+use crate::{
+    config::{ConfigProxyHttp, ConfigTls, PARALLELISM},
+    jrpc::JrpcRequestMeta,
+    metrics::{LabelsProxy, LabelsProxyHttpJrpc, Metrics},
+    proxy::{Proxy, ProxyConnectionGuard},
+    proxy_http::{ProxyHttpInner, ProxyHttpRequestBody, proxy_http_bodies::ProxyHttpResponseBody},
+    utils::{Loggable, decompress, is_hop_by_hop_header, raw_transaction_to_hash},
+};
+
+const TCP_KEEPALIVE_ATTEMPTS: u32 = 8;
+
+// ProxyHttp -----------------------------------------------------------
+
+pub(crate) struct ProxyHttp<C, P>
+where
+    C: ConfigProxyHttp,
+    P: ProxyHttpInner<C>,
+{
+    id: Uuid,
+
+    shared: ProxyHttpSharedState<C, P>,
+
+    backend: ProxyHttpBackendEndpoint<C, P>,
+    requests: HashMap<Uuid, ProxiedHttpRequest>,
+    postprocessor: actix::Addr<ProxyHttpPostprocessor<C, P>>,
+}
+
+impl<C, P> ProxyHttp<C, P>
+where
+    C: ConfigProxyHttp,
+    P: ProxyHttpInner<C>,
+{
+    fn new(shared: ProxyHttpSharedState<C, P>, connections_limit: usize) -> Self {
+        let id = Uuid::now_v7();
+
+        debug!(proxy = P::name(), worker_id = %id, "Creating http-proxy worker...");
+
+        let config = shared.config();
+        let inner = shared.inner();
+
+        let backend = ProxyHttpBackendEndpoint::new(
+            inner.clone(),
+            id.clone(),
+            shared.metrics.clone(),
+            config.backend_url(),
+            connections_limit,
+            config.backend_timeout(),
+        );
+
+        let peers: Arc<Vec<actix::Addr<ProxyHttpBackendEndpoint<C, P>>>> = Arc::new(
+            config
+                .peer_urls()
+                .iter()
+                .map(|peer_url| {
+                    ProxyHttpBackendEndpoint::new(
+                        shared.inner(),
+                        id.clone(),
+                        shared.metrics.clone(),
+                        peer_url.to_owned(),
+                        config.backend_max_concurrent_requests(),
+                        config.backend_timeout(),
+                    )
+                    .start()
+                })
+                .collect(),
+        );
+
+        let postprocessor = ProxyHttpPostprocessor::<C, P> {
+            worker_id: id.clone(),
+            inner: inner.clone(),
+            metrics: shared.metrics.clone(),
+            peers: peers.clone(),
+        }
+        .start();
+
+        Self { id, shared, backend, requests: HashMap::default(), postprocessor }
+    }
+
+    pub(crate) async fn run(
+        config: C,
+        tls: ConfigTls,
+        metrics: Arc<Metrics>,
+        canceller: tokio_util::sync::CancellationToken,
+        resetter: broadcast::Sender<()>,
+    ) -> Result<(), Box<dyn std::error::Error + Send>> {
+        let listener = match Self::listen(&config) {
+            Ok(listener) => listener,
+            Err(err) => {
+                error!(
+                    proxy = P::name(),
+                    addr = %config.listen_address(),
+                    error = ?err,
+                    "Failed to initialise a socket"
+                );
+                return Err(Box::new(err));
+            }
+        };
+
+        let workers_count =
+            std::cmp::min(PARALLELISM.to_static(), config.backend_max_concurrent_requests());
+        let max_concurrent_requests_per_worker =
+            config.backend_max_concurrent_requests() / workers_count;
+        if workers_count * max_concurrent_requests_per_worker <
+            config.backend_max_concurrent_requests()
+        {
+            warn!(
+                "Max backend concurrent requests must be a round of available parallelism ({}), therefore it's clamped at {} (instead of {})",
+                PARALLELISM.to_static(),
+                workers_count * max_concurrent_requests_per_worker,
+                config.backend_max_concurrent_requests()
+            );
+        }
+
+        let shared = ProxyHttpSharedState::<C, P>::new(config, &metrics);
+        let client_connections_count = shared.client_connections_count.clone();
+
+        info!(
+            proxy = P::name(),
+            workers_count = workers_count,
+            max_concurrent_requests_per_worker = max_concurrent_requests_per_worker,
+            "Starting http-proxy..."
+        );
+
+        let proxy = HttpServer::new(move || {
+            let this =
+                web::Data::new(Self::new(shared.clone(), max_concurrent_requests_per_worker));
+
+            App::new()
+                .app_data(this)
+                .wrap(NormalizePath::new(TrailingSlash::Trim))
+                .default_service(web::route().to(Self::receive))
+        })
+        .on_connect(Self::on_connect(metrics, client_connections_count))
+        .shutdown_signal(canceller.cancelled_owned())
+        .workers(workers_count);
+
+        let server = match if tls.enabled() {
+            let cert = tls.certificate().clone();
+            let key = tls.key().clone_key();
+
+            proxy.listen_rustls_0_23(
+                listener,
+                rustls::ServerConfig::builder()
+                    .with_no_client_auth()
+                    .with_single_cert(cert, key)
+                    .unwrap(),
+            )
+        } else {
+            proxy.listen(listener)
+        } {
+            Ok(server) => server,
+            Err(err) => {
+                error!(
+                    proxy = P::name(),
+                    error = ?err,
+                    "Failed to initialise http-proxy",
+                );
+                return Err(Box::new(err));
+            }
+        }
+        .run();
+
+        let handler = server.handle();
+        let mut resetter = resetter.subscribe();
+        tokio::spawn(async move {
+            if let Ok(_) = resetter.recv().await {
+                info!(proxy = P::name(), "Reset signal received, stopping http-proxy...");
+                handler.stop(true).await;
+            }
+        });
+
+        if let Err(err) = server.await {
+            error!(proxy = P::name(), error = ?err, "Failure while running http-proxy")
+        }
+
+        info!(proxy = P::name(), "Stopped http-proxy");
+
+        Ok(())
+    }
+
+    fn listen(config: &C) -> std::io::Result<std::net::TcpListener> {
+        let socket = socket2::Socket::new(
+            socket2::Domain::for_address(config.listen_address()),
+            socket2::Type::STREAM,
+            Some(socket2::Protocol::TCP),
+        )?;
+
+        socket.set_nonblocking(true)?; // must use non-blocking with tokio
+
+        if !config.idle_connection_timeout().is_zero() {
+            socket.set_tcp_keepalive(
+                &socket2::TcpKeepalive::new()
+                    .with_time(
+                        config.idle_connection_timeout().div_f64(f64::from(TCP_KEEPALIVE_ATTEMPTS)),
+                    )
+                    .with_interval(
+                        config.idle_connection_timeout().div_f64(f64::from(TCP_KEEPALIVE_ATTEMPTS)),
+                    )
+                    .with_retries(TCP_KEEPALIVE_ATTEMPTS - 1),
+            )?;
+        }
+
+        socket.bind(&socket2::SockAddr::from(config.listen_address()))?;
+
+        socket.listen(1024)?;
+
+        Ok(socket.into())
+    }
+
+    fn to_client_response<S>(bck_res: &ClientResponse<S>) -> HttpResponseBuilder {
+        // TODO: which headers from the backend should really make it to the client?
+        //       e.g. keep-alive, encoding, compression?
+        let mut cli_res = HttpResponse::build(bck_res.status());
+
+        for (name, header) in bck_res.headers().iter() {
+            if is_hop_by_hop_header(name) {
+                continue;
+            }
+            if let Ok(hname) = header::HeaderName::from_str(name.as_str()) {
+                cli_res.append_header((hname, header.clone()));
+            }
+        }
+
+        cli_res
+    }
+
+    /// receive accepts client's (frontend) request and proxies it to
+    /// backend
+    async fn receive(
+        cli_req: HttpRequest,
+        cli_req_body: web::Payload,
+        this: web::Data<Self>,
+    ) -> Result<HttpResponse, actix_web::Error> {
+        let timestamp = UtcDateTime::now();
+
+        let info = ProxyHttpRequestInfo::new(&cli_req, cli_req.conn_data::<ProxyConnectionGuard>());
+
+        let id = info.id.clone();
+        let connection_id = info.connection_id.clone();
+
+        let bck_req = this.backend.new_backend_request(&info);
+        let bck_req_body = ProxyHttpRequestBody::new(this.clone(), info, cli_req_body, timestamp);
+
+        let bck_res = match bck_req.send_stream(bck_req_body).await {
+            Ok(res) => res,
+            Err(err) => {
+                warn!(
+                    proxy = P::name(),
+                    request_id = %id,
+                    connection_id = %connection_id,
+                    worker_id = %this.id,
+                    error = ?err,
+                    "Failed to proxy a request",
+                );
+                this.shared
+                    .metrics
+                    .http_proxy_failure_count
+                    .get_or_create(&LabelsProxy { proxy: P::name() })
+                    .inc();
+                return Ok(HttpResponse::BadGateway().finish());
+            }
+        };
+
+        let timestamp = UtcDateTime::now();
+        let status = bck_res.status();
+        let mut cli_res = Self::to_client_response(&bck_res);
+
+        let bck_body = ProxyHttpResponseBody::new(
+            this,
+            id,
+            status,
+            bck_res.headers().clone(),
+            bck_res.into_stream(),
+            timestamp,
+        );
+
+        Ok(cli_res.streaming(bck_body))
+    }
+
+    pub(crate) fn postprocess_client_request(&self, req: ProxiedHttpRequest) {
+        let id = req.info.id.clone();
+        let connection_id = req.info.connection_id.clone();
+
+        if let Err(_) = self.requests.insert_sync(id, req) {
+            error!(
+                proxy = P::name(),
+                request_id = %id,
+                connection_id = %connection_id,
+                worker_id = %self.id,
+                "Duplicate request id",
+            );
+        };
+    }
+
+    pub(crate) fn postprocess_backend_response(&self, bck_res: ProxiedHttpResponse) {
+        let cli_req = match self.requests.remove_sync(&bck_res.info.id) {
+            Some((_, req)) => req,
+            None => {
+                error!(
+                    proxy = P::name(),
+                    request_id = %bck_res.info.id,
+                    worker_id = %self.id,
+                    "Proxied http response for unmatching request",
+                );
+                return;
+            }
+        };
+
+        // hand over to postprocessor asynchronously so that we can return the
+        // response to the client as early as possible
+        self.postprocessor.do_send(ProxiedHttpCombo { req: cli_req, res: bck_res });
+    }
+
+    fn finalise_proxying(
+        mut cli_req: ProxiedHttpRequest,
+        mut bck_res: ProxiedHttpResponse,
+        inner: Arc<P>,
+        metrics: Arc<Metrics>,
+        worker_id: Uuid,
+        peers: Arc<Vec<actix::Addr<ProxyHttpBackendEndpoint<C, P>>>>,
+    ) {
+        if cli_req.decompressed_size < cli_req.size {
+            (cli_req.decompressed_body, cli_req.decompressed_size) =
+                decompress(cli_req.body.clone(), cli_req.size, cli_req.info.content_encoding());
+        }
+
+        if bck_res.decompressed_size < bck_res.size {
+            (bck_res.decompressed_body, bck_res.decompressed_size) =
+                decompress(bck_res.body.clone(), bck_res.size, bck_res.info.content_encoding());
+        }
+
+        let jrpc_method =
+            match serde_json::from_slice::<JrpcRequestMeta>(&cli_req.decompressed_body) {
+                Ok(jrpc) => jrpc.method,
+                Err(err) => {
+                    warn!(
+                        proxy = P::name(),
+                        request_id = %cli_req.info.id,
+                        connection_id = %cli_req.info.connection_id,
+                        worker_id = %worker_id,
+                        error = ?err,
+                        "Failed to parse json-rpc request",
+                    );
+                    String::from("unknown")
+                }
+            };
+
+        if inner.should_mirror(jrpc_method.as_str(), &cli_req, &bck_res) {
+            for peer in peers.iter() {
+                let mut req = cli_req.clone();
+                req.info.jrpc_method = Some(jrpc_method.clone());
+                peer.do_send(req.clone());
+            }
+        }
+
+        Self::maybe_log_proxied_request_and_response(
+            jrpc_method.as_str(),
+            &cli_req,
+            &bck_res,
+            inner.clone(),
+            worker_id,
+        );
+
+        Self::emit_metrics_on_proxy_success(jrpc_method, &cli_req, &bck_res, metrics.clone());
+    }
+
+    fn postprocess_mirrored_response(
+        mut cli_req: ProxiedHttpRequest,
+        mut mrr_res: ProxiedHttpResponse,
+        inner: Arc<P>,
+        metrics: Arc<Metrics>,
+        worker_id: Uuid,
+    ) {
+        if cli_req.decompressed_size < cli_req.size {
+            (cli_req.decompressed_body, cli_req.decompressed_size) =
+                decompress(cli_req.body.clone(), cli_req.size, cli_req.info.content_encoding());
+        }
+
+        if mrr_res.decompressed_size < mrr_res.size {
+            (mrr_res.decompressed_body, mrr_res.decompressed_size) =
+                decompress(mrr_res.body.clone(), mrr_res.size, mrr_res.info.content_encoding());
+        }
+
+        let jrpc_method = cli_req.info().jrpc_method.as_ref().map_or("unknown", |v| v.as_str());
+        Self::maybe_log_mirrored_request(
+            jrpc_method,
+            &cli_req,
+            &mrr_res,
+            worker_id,
+            inner.config(),
+        );
+        metrics
+            .http_mirror_success_count
+            .get_or_create(&LabelsProxyHttpJrpc {
+                proxy: P::name(),
+                jrpc_method: String::from(jrpc_method),
+            })
+            .inc();
+    }
+
+    fn maybe_log_proxied_request_and_response(
+        jrpc_method: &str,
+        req: &ProxiedHttpRequest,
+        res: &ProxiedHttpResponse,
+        inner: Arc<P>,
+        worker_id: Uuid,
+    ) {
+        let config = inner.config();
+
+        let json_req = if config.log_proxied_requests() {
+            Loggable(&Self::maybe_sanitise(
+                config.log_sanitise(),
+                serde_json::from_slice(&req.decompressed_body).unwrap_or_default(),
+            ))
+        } else {
+            Loggable(&serde_json::Value::Null)
+        };
+
+        let json_res = if config.log_proxied_responses() {
+            Loggable(&Self::maybe_sanitise(
+                config.log_sanitise(),
+                serde_json::from_slice(&res.decompressed_body).unwrap_or_default(),
+            ))
+        } else {
+            Loggable(&serde_json::Value::Null)
+        };
+
+        info!(
+            proxy = P::name(),
+            request_id = %req.info.id,
+            connection_id = %req.info.connection_id,
+            worker_id = %worker_id,
+            jrpc_method = jrpc_method,
+            http_status = res.status(),
+            remote_addr = req.info().remote_addr,
+            ts_request_received = req.start().format(&Iso8601::DEFAULT).unwrap_or_default(),
+            latency_backend = (res.start() - req.end()).as_seconds_f64(),
+            latency_total = (res.end() - req.start()).as_seconds_f64(),
+            json_request = tracing::field::valuable(&json_req),
+            json_response = tracing::field::valuable(&json_res),
+            "Proxied request"
+        );
+    }
+
+    fn maybe_log_mirrored_request(
+        jrpc_method: &str,
+        req: &ProxiedHttpRequest,
+        res: &ProxiedHttpResponse,
+        worker_id: Uuid,
+        config: &C,
+    ) {
+        let json_req = if config.log_mirrored_requests() {
+            Loggable(&Self::maybe_sanitise(
+                config.log_sanitise(),
+                serde_json::from_slice(&req.decompressed_body).unwrap_or_default(),
+            ))
+        } else {
+            Loggable(&serde_json::Value::Null)
+        };
+
+        let json_res = if config.log_mirrored_responses() {
+            Loggable(&Self::maybe_sanitise(
+                config.log_sanitise(),
+                serde_json::from_slice(&res.decompressed_body).unwrap_or_default(),
+            ))
+        } else {
+            Loggable(&serde_json::Value::Null)
+        };
+
+        info!(
+            proxy = P::name(),
+            request_id = %req.info.id,
+            connection_id = %req.info.connection_id,
+            worker_id = %worker_id,
+            jrpc_method = jrpc_method,
+            http_status = res.status(),
+            remote_addr = req.info().remote_addr,
+            ts_request_received = req.start().format(&Iso8601::DEFAULT).unwrap_or_default(),
+            latency_backend = (res.start() - req.end()).as_seconds_f64(),
+            latency_total = (res.end() - req.start()).as_seconds_f64(),
+            json_request = tracing::field::valuable(&json_req),
+            json_response = tracing::field::valuable(&json_res),
+            "Mirrored request"
+        );
+    }
+
+    fn maybe_sanitise(do_sanitise: bool, mut message: serde_json::Value) -> serde_json::Value {
+        if do_sanitise {
+            sanitise(&mut message);
+        }
+        return message;
+
+        fn sanitise(message: &mut serde_json::Value) {
+            if message.is_array() {
+                // batch
+
+                for item in message.as_array_mut().unwrap() {
+                    sanitise(item);
+                }
+                return;
+            }
+
+            let message = match message.as_object_mut() {
+                Some(message) => message,
+                None => return,
+            };
+
+            let method = match match message.get_key_value("method") {
+                Some((_, method)) => method.as_str(),
+                None => None,
+            } {
+                Some(method) => method,
+                None => "",
+            }
+            .to_owned();
+
+            if method != "" {
+                // single-shot request
+
+                let params = match match message.get_mut("params") {
+                    Some(params) => params,
+                    None => return,
+                }
+                .as_array_mut()
+                {
+                    Some(params) => params,
+                    None => return,
+                };
+
+                match method.as_str() {
+                    "engine_forkchoiceUpdatedV3" => {
+                        if params.len() < 2 {
+                            return;
+                        }
+
+                        let execution_payload = match params[1].as_object_mut() {
+                            Some(execution_payload) => execution_payload,
+                            None => return,
+                        };
+
+                        let transactions = match match execution_payload.get_mut("transactions") {
+                            Some(transactions) => transactions,
+                            None => return,
+                        }
+                        .as_array_mut()
+                        {
+                            Some(transactions) => transactions,
+                            None => return,
+                        };
+
+                        for transaction in transactions {
+                            raw_transaction_to_hash(transaction);
+                        }
+                    }
+
+                    "engine_newPayloadV4" => {
+                        if params.len() < 1 {
+                            return;
+                        }
+
+                        let execution_payload = match params[0].as_object_mut() {
+                            Some(execution_payload) => execution_payload,
+                            None => return,
+                        };
+
+                        let transactions = match match execution_payload.get_mut("transactions") {
+                            Some(transactions) => transactions,
+                            None => return,
+                        }
+                        .as_array_mut()
+                        {
+                            Some(transactions) => transactions,
+                            None => return,
+                        };
+
+                        for transaction in transactions {
+                            raw_transaction_to_hash(transaction);
+                        }
+                    }
+
+                    "eth_sendBundle" => {
+                        if params.len() < 1 {
+                            return;
+                        }
+
+                        let execution_payload = match params[0].as_object_mut() {
+                            Some(execution_payload) => execution_payload,
+                            None => return,
+                        };
+
+                        let transactions = match match execution_payload.get_mut("txs") {
+                            Some(transactions) => transactions,
+                            None => return,
+                        }
+                        .as_array_mut()
+                        {
+                            Some(transactions) => transactions,
+                            None => return,
+                        };
+
+                        for transaction in transactions {
+                            raw_transaction_to_hash(transaction);
+                        }
+                    }
+
+                    "eth_sendRawTransaction" => {
+                        for transaction in params {
+                            raw_transaction_to_hash(transaction);
+                        }
+                    }
+
+                    _ => {
+                        return;
+                    }
+                }
+            }
+
+            let result = match match message.get_mut("result") {
+                Some(result) => result.as_object_mut(),
+                None => return,
+            } {
+                Some(result) => result,
+                None => return,
+            };
+
+            if let Some(execution_payload) = result.get_mut("executionPayload") {
+                if let Some(transactions) = execution_payload.get_mut("transactions") {
+                    if let Some(transactions) = transactions.as_array_mut() {
+                        // engine_getPayloadV4
+
+                        for transaction in transactions {
+                            raw_transaction_to_hash(transaction);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn emit_metrics_on_proxy_success(
+        jrpc_method: String,
+        req: &ProxiedHttpRequest,
+        res: &ProxiedHttpResponse,
+        metrics: Arc<Metrics>,
+    ) {
+        let metric_labels_jrpc = LabelsProxyHttpJrpc { jrpc_method, proxy: P::name() };
+        let latency_backend = 1000000.0 * (res.start() - req.end()).as_seconds_f64();
+        let latency_total = 1000000.0 * (res.end() - req.start()).as_seconds_f64();
+
+        // latency_backend
+        metrics
+            .http_latency_backend
+            .get_or_create(&metric_labels_jrpc)
+            .record(latency_backend.round() as i64);
+
+        // latency_delta
+        metrics
+            .http_latency_delta
+            .get_or_create(&metric_labels_jrpc)
+            .record((latency_total - latency_backend).round() as i64);
+
+        // latency_total
+        metrics
+            .http_latency_total
+            .get_or_create(&metric_labels_jrpc)
+            .record(latency_total.round() as i64);
+
+        // proxy_success_count
+        metrics.http_proxy_success_count.get_or_create(&metric_labels_jrpc).inc();
+
+        // proxied_request_size
+        metrics.http_request_size.get_or_create_owned(&metric_labels_jrpc).record(req.size as i64);
+
+        // proxied_response_size
+        metrics.http_response_size.get_or_create_owned(&metric_labels_jrpc).record(res.size as i64);
+
+        // proxied_request_decompressed_size
+        metrics
+            .http_request_decompressed_size
+            .get_or_create_owned(&metric_labels_jrpc)
+            .record(req.decompressed_size as i64);
+
+        // proxied_response_decompressed_size
+        metrics
+            .http_response_decompressed_size
+            .get_or_create_owned(&metric_labels_jrpc)
+            .record(res.decompressed_size as i64);
+    }
+}
+
+impl<C, P> Proxy<P> for ProxyHttp<C, P>
+where
+    C: ConfigProxyHttp,
+    P: ProxyHttpInner<C>,
+{
+}
+
+impl<C, P> Drop for ProxyHttp<C, P>
+where
+    C: ConfigProxyHttp,
+    P: ProxyHttpInner<C>,
+{
+    fn drop(&mut self) {
+        debug!(
+            proxy = P::name(),
+            worker_id = %self.id,
+            "Destroying http-proxy worker...",
+        );
+    }
+}
+
+// ProxyHttpSharedState ------------------------------------------------
+
+#[derive(Clone)]
+struct ProxyHttpSharedState<C, P>
+where
+    C: ConfigProxyHttp,
+    P: ProxyHttpInner<C>,
+{
+    inner: Arc<P>,
+    metrics: Arc<Metrics>,
+
+    client_connections_count: Arc<AtomicI64>,
+
+    _config: PhantomData<C>,
+}
+
+impl<C, P> ProxyHttpSharedState<C, P>
+where
+    C: ConfigProxyHttp,
+    P: ProxyHttpInner<C>,
+{
+    fn new(config: C, metrics: &Arc<Metrics>) -> Self {
+        Self {
+            inner: Arc::new(P::new(config)),
+            metrics: metrics.clone(),
+            client_connections_count: Arc::new(AtomicI64::new(0)),
+            _config: PhantomData,
+        }
+    }
+
+    #[inline]
+    fn config(&self) -> &C {
+        self.inner.config()
+    }
+
+    #[inline]
+    fn inner(&self) -> Arc<P> {
+        self.inner.clone()
+    }
+}
+
+// ProxyHttpPostprocessor ----------------------------------------------
+
+struct ProxyHttpPostprocessor<C, P>
+where
+    C: ConfigProxyHttp,
+    P: ProxyHttpInner<C>,
+{
+    inner: Arc<P>,
+    worker_id: Uuid,
+    peers: Arc<Vec<actix::Addr<ProxyHttpBackendEndpoint<C, P>>>>,
+    metrics: Arc<Metrics>,
+}
+
+impl<C, P> actix::Actor for ProxyHttpPostprocessor<C, P>
+where
+    C: ConfigProxyHttp,
+    P: ProxyHttpInner<C>,
+{
+    type Context = actix::Context<Self>;
+
+    fn started(&mut self, ctx: &mut Self::Context) {
+        ctx.set_mailbox_capacity(1024);
+    }
+}
+
+impl<C, P> actix::Handler<ProxiedHttpCombo> for ProxyHttpPostprocessor<C, P>
+where
+    C: ConfigProxyHttp,
+    P: ProxyHttpInner<C>,
+{
+    type Result = ();
+
+    fn handle(&mut self, msg: ProxiedHttpCombo, ctx: &mut Self::Context) -> Self::Result {
+        let inner = self.inner.clone();
+        let metrics = self.metrics.clone();
+        let worker_id = self.worker_id.clone();
+        let peers = self.peers.clone();
+
+        ctx.spawn(
+            async move {
+                ProxyHttp::<C, P>::finalise_proxying(
+                    msg.req, msg.res, inner, metrics, worker_id, peers,
+                );
+            }
+            .into_actor(self),
+        );
+    }
+}
+
+// ProxyHttpBackendEndpoint --------------------------------------------
+
+pub(crate) struct ProxyHttpBackendEndpoint<C, P>
+where
+    C: ConfigProxyHttp,
+    P: ProxyHttpInner<C>,
+{
+    inner: Arc<P>,
+    worker_id: Uuid,
+    metrics: Arc<Metrics>,
+
+    client: Client,
+    url: Url,
+
+    _config: PhantomData<C>,
+}
+
+impl<C, P> ProxyHttpBackendEndpoint<C, P>
+where
+    C: ConfigProxyHttp,
+    P: ProxyHttpInner<C>,
+{
+    fn new(
+        inner: Arc<P>,
+        worker_id: Uuid,
+        metrics: Arc<Metrics>,
+        url: Url,
+        connections_limit: usize,
+        timeout: std::time::Duration,
+    ) -> Self {
+        let host = url.host().unwrap().to_string();
+
+        let client = Client::builder()
+            .add_default_header((header::HOST, host))
+            .connector(Connector::new().conn_keep_alive(2 * timeout).limit(connections_limit))
+            .timeout(timeout)
+            .finish();
+
+        Self { inner, worker_id, metrics, client, url, _config: PhantomData }
+    }
+
+    fn new_backend_request(&self, info: &ProxyHttpRequestInfo) -> ClientRequest {
+        let mut url = self.url.clone();
+        url.set_path(&info.path);
+
+        let mut req = self.client.request(info.method.clone(), url.as_str()).no_decompress();
+
+        for (header, value) in info.headers.iter() {
+            req = req.insert_header((header.clone(), value.clone()));
+        }
+
+        req
+    }
+}
+
+impl<C, P> actix::Actor for ProxyHttpBackendEndpoint<C, P>
+where
+    C: ConfigProxyHttp,
+    P: ProxyHttpInner<C>,
+{
+    type Context = actix::Context<Self>;
+
+    fn started(&mut self, ctx: &mut Self::Context) {
+        ctx.set_mailbox_capacity(1024);
+    }
+}
+
+impl<C, P> actix::Handler<ProxiedHttpRequest> for ProxyHttpBackendEndpoint<C, P>
+where
+    C: ConfigProxyHttp,
+    P: ProxyHttpInner<C>,
+{
+    type Result = ();
+
+    fn handle(&mut self, cli_req: ProxiedHttpRequest, ctx: &mut Self::Context) -> Self::Result {
+        let start = UtcDateTime::now();
+
+        let inner = self.inner.clone();
+        let worker_id = self.worker_id.clone();
+        let metrics = self.metrics.clone();
+
+        let mrr_req = self.new_backend_request(&cli_req.info);
+        let mrr_req_body = cli_req.body.clone();
+
+        ctx.spawn(
+            async move {
+                match mrr_req.send_body(mrr_req_body).await {
+                    Ok(mut bck_res) => {
+                        let end = UtcDateTime::now();
+
+                        match bck_res.body().await {
+                            Ok(mrr_res_body) => {
+                                let size = match mrr_res_body.size() {
+                                    BodySize::Sized(size) => size, // Body is always sized
+                                    BodySize::None => 0,
+                                    BodySize::Stream => 0,
+                                };
+                                let info = ProxyHttpResponseInfo::new(
+                                    cli_req.info.id,
+                                    bck_res.status(),
+                                    bck_res.headers().clone(),
+                                );
+                                let mrr_res = ProxiedHttpResponse {
+                                    info,
+                                    body: mrr_res_body,
+                                    size: size as usize,
+                                    decompressed_body: Bytes::new(),
+                                    decompressed_size: 0,
+                                    start,
+                                    end,
+                                };
+                                ProxyHttp::<C, P>::postprocess_mirrored_response(
+                                    cli_req, mrr_res, inner, metrics, worker_id,
+                                );
+                            }
+                            Err(err) => {
+                                warn!(
+                                    proxy = P::name(),
+                                    request_id = %cli_req.info.id,
+                                    connection_id = %cli_req.info.connection_id,
+                                    error = ?err,
+                                    "Failed to mirror a request",
+                                );
+                                metrics
+                                    .http_mirror_failure_count
+                                    .get_or_create(&LabelsProxy { proxy: P::name() })
+                                    .inc();
+                            }
+                        };
+                    }
+                    Err(err) => {
+                        warn!(
+                            proxy = P::name(),
+                            request_id = %cli_req.info.id,
+                            connection_id = %cli_req.info.connection_id,
+                            error = ?err,
+                            "Failed to mirror a request",
+                        );
+                        metrics
+                            .http_mirror_failure_count
+                            .get_or_create(&LabelsProxy { proxy: P::name() })
+                            .inc();
+                    }
+                }
+            }
+            .into_actor(self),
+        );
+    }
+}
+
+// ProxyHttpRequestInfo ------------------------------------------------
+
+#[derive(Clone)]
+pub(crate) struct ProxyHttpRequestInfo {
+    id: Uuid,
+    connection_id: Uuid,
+    remote_addr: Option<String>,
+    method: Method,
+    path: String,
+    path_and_query: String,
+    headers: HeaderMap,
+    jrpc_method: Option<String>,
+}
+
+impl ProxyHttpRequestInfo {
+    pub(crate) fn new(req: &HttpRequest, guard: Option<&ProxyConnectionGuard>) -> Self {
+        // copy over only non hop-by-hop headers
+        let mut headers = HeaderMap::new();
+        for (header, value) in req.headers().iter() {
+            if !is_hop_by_hop_header(header) {
+                headers.insert(header.clone(), value.clone());
+            }
+        }
+
+        // append remote ip to x-forwarded-for
+        if let Some(peer_addr) = req.connection_info().peer_addr() {
+            let mut forwarded_for = String::new();
+            if let Some(ff) = req.headers().get(header::X_FORWARDED_FOR) {
+                if let Ok(ff) = ff.to_str() {
+                    forwarded_for.push_str(ff);
+                    forwarded_for.push_str(", ");
+                }
+            }
+            forwarded_for.push_str(peer_addr);
+            if let Ok(forwarded_for) = HeaderValue::from_str(&forwarded_for) {
+                headers.insert(header::X_FORWARDED_FOR, forwarded_for);
+            }
+        }
+
+        // set x-forwarded-proto if it's not already set
+        if req.connection_info().scheme() != "" {
+            if None == req.headers().get(header::X_FORWARDED_PROTO) {
+                if let Ok(forwarded_proto) = HeaderValue::from_str(req.connection_info().scheme()) {
+                    headers.insert(header::X_FORWARDED_PROTO, forwarded_proto);
+                }
+            }
+        }
+
+        // set x-forwarded-host if it's not already set
+        if req.connection_info().scheme() != "" {
+            if None == req.headers().get(header::X_FORWARDED_HOST) {
+                if let Ok(forwarded_host) = HeaderValue::from_str(req.connection_info().scheme()) {
+                    headers.insert(header::X_FORWARDED_HOST, forwarded_host);
+                }
+            }
+        }
+
+        // remote address from the guard has port, and connection info has ip
+        // address only => we prefer the guard
+        let remote_addr = match guard {
+            Some(guard) => match guard.remote_addr.clone() {
+                Some(remote_addr) => Some(remote_addr),
+                None => req.connection_info().peer_addr().map(String::from),
+            },
+            None => req.connection_info().peer_addr().map(String::from),
+        };
+
+        let path = match req.path() {
+            "" => "/",
+            val => val,
+        }
+        .to_string();
+
+        let path_and_query = match req.query_string() {
+            "" => path.clone(),
+            val => format!("{}?{}", path, val),
+        };
+
+        Self {
+            id: Uuid::now_v7(),
+            connection_id: Uuid::now_v7(),
+            remote_addr,
+            method: req.method().clone(),
+            path,
+            path_and_query,
+            headers,
+            jrpc_method: None,
+        }
+    }
+
+    #[inline]
+    pub(crate) fn id(&self) -> Uuid {
+        self.id.clone()
+    }
+
+    #[inline]
+    pub(crate) fn connection_id(&self) -> Uuid {
+        self.connection_id.clone()
+    }
+
+    #[inline]
+    fn content_encoding(&self) -> String {
+        self.headers
+            .get(header::CONTENT_ENCODING)
+            .map(|h| h.to_str().unwrap_or_default())
+            .map(|h| h.to_string())
+            .unwrap_or_default()
+    }
+
+    #[inline]
+    pub fn path_and_query(&self) -> &str {
+        &self.path_and_query
+    }
+
+    #[inline]
+    pub fn remote_addr(&self) -> &Option<String> {
+        &self.remote_addr
+    }
+}
+
+// ProxyHttpResponseInfo -----------------------------------------------
+
+#[derive(Clone)]
+pub(crate) struct ProxyHttpResponseInfo {
+    id: Uuid,
+    status: StatusCode,
+    headers: HeaderMap,
+}
+
+impl ProxyHttpResponseInfo {
+    pub(crate) fn new(id: Uuid, status: StatusCode, headers: HeaderMap) -> Self {
+        Self { id, status, headers }
+    }
+
+    #[inline]
+    pub(crate) fn id(&self) -> Uuid {
+        self.id.clone()
+    }
+
+    fn content_encoding(&self) -> String {
+        self.headers
+            .get(header::CONTENT_ENCODING)
+            .map(|h| h.to_str().unwrap_or_default())
+            .map(|h| h.to_string())
+            .unwrap_or_default()
+    }
+}
+
+// ProxiedHttpRequest --------------------------------------------------
+
+#[derive(Clone, actix::Message)]
+#[rtype(result = "()")]
+pub(crate) struct ProxiedHttpRequest {
+    info: ProxyHttpRequestInfo,
+    body: Bytes,
+    size: usize,
+    decompressed_body: Bytes,
+    decompressed_size: usize,
+    start: UtcDateTime,
+    end: UtcDateTime,
+}
+
+impl ProxiedHttpRequest {
+    pub(crate) fn new(
+        info: ProxyHttpRequestInfo,
+        body: Box<Vec<u8>>,
+        start: UtcDateTime,
+        end: UtcDateTime,
+    ) -> Self {
+        let size = body.len();
+        Self {
+            info,
+            body: Bytes::from(*body),
+            size,
+            decompressed_body: Bytes::new(),
+            decompressed_size: 0,
+            start,
+            end,
+        }
+    }
+
+    #[inline]
+    pub(crate) fn info(&self) -> &ProxyHttpRequestInfo {
+        &self.info
+    }
+
+    #[inline]
+    pub(crate) fn start(&self) -> UtcDateTime {
+        self.start
+    }
+
+    #[inline]
+    pub(crate) fn end(&self) -> UtcDateTime {
+        self.end
+    }
+}
+
+// ProxiedHttpResponse -------------------------------------------------
+
+#[derive(Clone, actix::Message)]
+#[rtype(result = "()")]
+pub(crate) struct ProxiedHttpResponse {
+    info: ProxyHttpResponseInfo,
+    body: Bytes,
+    size: usize,
+    decompressed_body: Bytes,
+    decompressed_size: usize,
+    start: UtcDateTime,
+    end: UtcDateTime,
+}
+
+impl ProxiedHttpResponse {
+    pub(crate) fn new(
+        info: ProxyHttpResponseInfo,
+        body: Box<Vec<u8>>,
+        start: UtcDateTime,
+        end: UtcDateTime,
+    ) -> Self {
+        let size = body.len();
+        Self {
+            info,
+            body: Bytes::from(*body),
+            size,
+            decompressed_body: Bytes::new(),
+            decompressed_size: 0,
+            start,
+            end,
+        }
+    }
+
+    pub(crate) fn status(&self) -> &str {
+        self.info.status.as_str()
+    }
+
+    pub(crate) fn body(&self) -> Bytes {
+        self.body.clone()
+    }
+
+    #[inline]
+    pub(crate) fn start(&self) -> UtcDateTime {
+        self.start
+    }
+
+    #[inline]
+    pub(crate) fn end(&self) -> UtcDateTime {
+        self.end
+    }
+}
+
+// ProxiedHttpCombo ----------------------------------------------------
+
+#[derive(Clone, actix::Message)]
+#[rtype(result = "()")]
+struct ProxiedHttpCombo {
+    req: ProxiedHttpRequest,
+    res: ProxiedHttpResponse,
+}
