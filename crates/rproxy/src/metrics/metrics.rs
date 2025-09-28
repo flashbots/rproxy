@@ -304,6 +304,8 @@ impl Metrics {
 
         socket.set_nonblocking(true)?; // must use non-blocking with tokio
 
+        socket.set_linger(Some(Duration::from_secs(1)))?; // allow time to flush buffers on close
+
         socket.set_tcp_keepalive(
             &TcpKeepalive::new()
                 .with_time(Duration::from_secs(15))

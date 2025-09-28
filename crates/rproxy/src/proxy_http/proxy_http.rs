@@ -224,6 +224,8 @@ where
 
         socket.set_nonblocking(true)?; // must use non-blocking with tokio
 
+        socket.set_linger(Some(config.backend_timeout()))?; // allow time to flush buffers on close
+
         if !config.idle_connection_timeout().is_zero() {
             socket.set_tcp_keepalive(
                 &socket2::TcpKeepalive::new()
@@ -245,8 +247,6 @@ where
     }
 
     fn to_client_response<S>(bck_res: &ClientResponse<S>) -> HttpResponseBuilder {
-        // TODO: which headers from the backend should really make it to the client?
-        //       e.g. keep-alive, encoding, compression?
         let mut cli_res = HttpResponse::build(bck_res.status());
 
         for (name, header) in bck_res.headers().iter() {

@@ -207,7 +207,7 @@ where
 
         socket.set_nonblocking(true)?; // must use non-blocking with tokio
 
-        socket.set_linger(Some(Duration::from_secs(1)))?;
+        socket.set_linger(Some(config.backend_timeout()))?; // allow time to flush buffers on close
 
         socket.bind(&socket2::SockAddr::from(config.listen_address()))?;
 
