@@ -30,7 +30,7 @@ pub(crate) static PARALLELISM_STRING: LazyLock<String> = LazyLock::new(|| PARALL
 // Config --------------------------------------------------------------
 
 #[derive(Clone, Parser)]
-#[command(about, author, long_about = None, term_width = 100, version)]
+#[command(about, author, long_about = None, term_width = 90, version)]
 pub struct Config {
     #[command(flatten)]
     pub(crate) authrpc: ConfigAuthrpc,
