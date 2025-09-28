@@ -164,3 +164,87 @@ tls:
       --tls-certificate <path>  path to tls certificate [env: RPROXY_TLS_CERTIFICATE=] [default: ]
       --tls-key <path>          path to tls key [env: RPROXY_TLS_KEY=] [default: ]
 ```
+
+## Metrics
+
+```prometheus
+# HELP rproxy_client_connections_active_count count of active client connections.
+# TYPE rproxy_client_connections_active_count gauge
+
+# HELP rproxy_client_connections_established_count count of client connections established.
+# TYPE rproxy_client_connections_established_count counter
+
+# HELP rproxy_client_connections_closed_count count of client connections closed.
+# TYPE rproxy_client_connections_closed_count counter
+
+# HELP rproxy_http_latency_backend_nanoseconds latency of backend http responses (interval b/w end of client's request and begin of backend's response).
+# TYPE rproxy_http_latency_backend_nanoseconds gauge
+# UNIT rproxy_http_latency_backend_nanoseconds nanoseconds
+
+# HELP rproxy_http_latency_delta_nanoseconds latency delta (http_latency_total - http_latency_backend).
+# TYPE rproxy_http_latency_delta_nanoseconds gauge
+# UNIT rproxy_http_latency_delta_nanoseconds nanoseconds
+
+# HELP rproxy_http_latency_total_nanoseconds overall latency of http requests (interval b/w begin of client's request and end of forwarded response).
+# TYPE rproxy_http_latency_total_nanoseconds gauge
+# UNIT rproxy_http_latency_total_nanoseconds nanoseconds
+
+# HELP rproxy_http_mirror_success_count count of successfully mirrored http requests/responses.
+# TYPE rproxy_http_mirror_success_count counter
+
+# HELP rproxy_http_mirror_failure_count count of failures to mirror http request/response.
+# TYPE rproxy_http_mirror_failure_count counter
+
+# HELP rproxy_http_proxy_success_count count of successfully proxied http requests/responses.
+# TYPE rproxy_http_proxy_success_count counter
+
+# HELP rproxy_http_proxy_failure_count count of failures to proxy http request/response.
+# TYPE rproxy_http_proxy_failure_count counter
+
+# HELP rproxy_http_request_size_bytes sizes of incoming http requests.
+# TYPE rproxy_http_request_size_bytes gauge
+# UNIT rproxy_http_request_size_bytes bytes
+
+# HELP rproxy_http_response_size_bytes sizes of proxied http responses.
+# TYPE rproxy_http_response_size_bytes gauge
+# UNIT rproxy_http_response_size_bytes bytes
+
+# HELP rproxy_http_request_decompressed_size_bytes decompressed sizes of incoming http requests.
+# TYPE rproxy_http_request_decompressed_size_bytes gauge
+# UNIT rproxy_http_request_decompressed_size_bytes bytes
+
+# HELP rproxy_http_response_decompressed_size_bytes decompressed sizes of proxied http responses.
+# TYPE rproxy_http_response_decompressed_size_bytes gauge
+# UNIT rproxy_http_response_decompressed_size_bytes bytes
+
+# HELP rproxy_tls_certificate_valid_not_before tls certificate's not-valid-before timestamp.
+# TYPE rproxy_tls_certificate_valid_not_before gauge
+rproxy_tls_certificate_valid_not_before 1761974266
+
+# HELP rproxy_tls_certificate_valid_not_after tls certificate's not-valid-after timestamp.
+# TYPE rproxy_tls_certificate_valid_not_after gauge
+rproxy_tls_certificate_valid_not_after 1761974266
+
+# HELP rproxy_ws_latency_backend_nanoseconds round-trip-time of websocket pings to backend divided by 2.
+# TYPE rproxy_ws_latency_backend_nanoseconds gauge
+# UNIT rproxy_ws_latency_backend_nanoseconds nanoseconds
+
+# HELP rproxy_ws_latency_client_nanoseconds round-trip-time of websocket pings to backend divided by 2.
+# TYPE rproxy_ws_latency_client_nanoseconds gauge
+# UNIT rproxy_ws_latency_client_nanoseconds nanoseconds
+
+# HELP rproxy_ws_latency_proxy_nanoseconds time to process the websocket message by the proxy.
+# TYPE rproxy_ws_latency_proxy_nanoseconds gauge
+# UNIT rproxy_ws_latency_proxy_nanoseconds nanoseconds
+
+# HELP rproxy_ws_message_size_bytes sizes of proxied websocket messages.
+# TYPE rproxy_ws_message_size_bytes gauge
+# UNIT rproxy_ws_message_size_bytes bytes
+
+# HELP rproxy_ws_proxy_success_count count of successfully proxied websocket messages.
+# TYPE rproxy_ws_proxy_success_count counter
+
+# HELP rproxy_ws_proxy_failure_count count of failures to proxy websocket message.
+# TYPE rproxy_ws_proxy_failure_count counter
+# EOF
+```
