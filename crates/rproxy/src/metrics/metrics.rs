@@ -323,7 +323,7 @@ impl Metrics {
     async fn receive(
         req: HttpRequest,
         _: web::Payload,
-        this: web::Data<Arc<Self>>, // TODO: should there be RwMutex?
+        this: web::Data<Arc<Self>>,
     ) -> Result<HttpResponse, actix_web::Error> {
         if req.method() != Method::GET {
             return Ok(HttpResponse::BadRequest().finish());
