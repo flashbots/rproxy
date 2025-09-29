@@ -302,9 +302,14 @@ impl Metrics {
             Some(socket2::Protocol::TCP),
         )?;
 
-        socket.set_nonblocking(true)?; // must use non-blocking with tokio
+        // must use non-blocking with tokio
+        socket.set_nonblocking(true)?;
 
-        socket.set_linger(Some(Duration::from_secs(1)))?; // allow time to flush buffers on close
+        // allow time to flush buffers on close
+        socket.set_linger(Some(Duration::from_secs(1)))?;
+
+        // allow binding to the socket whlie there are still TIME_WAIT conns
+        socket.set_reuse_address(true)?;
 
         socket.set_tcp_keepalive(
             &TcpKeepalive::new()
