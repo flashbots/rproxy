@@ -1222,12 +1222,14 @@ impl ProxiedHttpResponse {
         }
     }
 
+    #[inline]
     pub(crate) fn status(&self) -> &str {
         self.info.status.as_str()
     }
 
-    pub(crate) fn body(&self) -> Bytes {
-        self.body.clone()
+    #[inline]
+    pub(crate) fn decompressed_body(&self) -> Bytes {
+        self.decompressed_body.clone()
     }
 
     #[inline]

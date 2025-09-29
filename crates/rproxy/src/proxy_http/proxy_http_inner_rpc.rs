@@ -46,13 +46,14 @@ impl ProxyHttpInner<ConfigRpc> for ProxyHttpInnerRpc {
             return true;
         }
 
-        let jrpc_response = match serde_json::from_slice::<JrpcResponseMeta>(&res.body()) {
-            Ok(jrpc_response) => jrpc_response,
-            Err(err) => {
-                warn!(proxy = Self::name(), error = ?err, "Failed to parse json-rpc response");
-                return false;
-            }
-        };
+        let jrpc_response =
+            match serde_json::from_slice::<JrpcResponseMeta>(&res.decompressed_body()) {
+                Ok(jrpc_response) => jrpc_response,
+                Err(err) => {
+                    warn!(proxy = Self::name(), error = ?err, "Failed to parse json-rpc response");
+                    return false;
+                }
+            };
 
         return jrpc_response.error.is_none();
     }
