@@ -25,13 +25,16 @@ struct CircuitBreakerInner {
 pub(crate) struct CircuitBreaker {
     config: ConfigCircuitBreaker,
     inner: Arc<Mutex<CircuitBreakerInner>>,
-    // client: Client,
+    client: Client,
 }
 
 impl CircuitBreaker {
     pub(crate) fn new(config: ConfigCircuitBreaker) -> Self {
+        let client = Self::client(&config);
+
         Self {
             config,
+            client,
             inner: Arc::new(Mutex::new(CircuitBreakerInner {
                 curr_status: Status::Healthy,
                 last_status: Status::Healthy,
@@ -105,9 +108,8 @@ impl CircuitBreaker {
     }
 
     async fn poll(&self, resetter: broadcast::Sender<()>) {
-        let client = Self::client(&self.config);
-        let client = Arc::new(client);
-        let req = client
+        let req = self
+            .client
             .request(Method::GET, self.config.url.clone())
             .timeout(Self::timeout(&self.config));
 
