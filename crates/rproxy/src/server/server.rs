@@ -47,8 +47,6 @@ impl Server {
 
         // spawn circuit-breaker
         if config.circuit_breaker.url != "" {
-            let circuit_breaker = CircuitBreaker::new(config.circuit_breaker.clone());
-
             let canceller = canceller.clone();
             let resetter = resetter.clone();
 
@@ -60,6 +58,8 @@ impl Server {
                         std::process::exit(-1);
                     }
                 };
+
+                let circuit_breaker = CircuitBreaker::new(config.circuit_breaker.clone());
 
                 tokio::task::LocalSet::new()
                     .block_on(&rt, async move { circuit_breaker.run(canceller, resetter).await })

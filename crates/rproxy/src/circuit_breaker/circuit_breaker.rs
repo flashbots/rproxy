@@ -86,6 +86,7 @@ impl CircuitBreaker {
         let mut ticker = tokio::time::interval(self.config.poll_interval);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
+        // spawning locally b/c actix client is thread-local by design
         if let Err(err) = tokio::task::spawn_local(async move {
             loop {
                 let resetter = resetter.clone();
