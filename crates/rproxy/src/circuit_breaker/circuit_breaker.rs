@@ -103,7 +103,11 @@ impl CircuitBreaker {
         })
         .await
         {
-            warn!(service = Self::name(), error = ?err, "Failure while running circuit-breaker");
+            warn!(
+                service = Self::name(),
+                error = ?err,
+                "Failure while running circuit-breaker",
+            );
         }
     }
 
@@ -117,13 +121,21 @@ impl CircuitBreaker {
             Ok(res) => match res.status() {
                 http::StatusCode::OK => Status::Healthy,
                 _ => {
-                    debug!(status = %res.status(), "Unexpected backend status");
+                    debug!(
+                        service = Self::name(),
+                        status = %res.status(),
+                        "Unexpected backend status",
+                    );
                     Status::Unhealthy
                 }
             },
 
             Err(err) => {
-                debug!(error = ?err, "Failed to poll health-status of the backend");
+                debug!(
+                    service = Self::name(),
+                    error = ?err,
+                    "Failed to poll health-status of the backend",
+                );
                 Status::Unhealthy
             }
         };
