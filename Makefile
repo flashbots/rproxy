@@ -11,3 +11,7 @@ fmt:
 .PHONY: help
 help:
 	@cargo run -- --help
+
+.PHONY: docker
+docker:
+	@docker build -t rproxy --progress plain .
