@@ -25,10 +25,9 @@ RUN CARGO_INCREMENTAL=0 \
     RUSTFLAGS="--cfg tracing_unstable -C metadata=host" \
     SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct) \
     TZ=UTC \
-    cargo build \
+    cargo build --package rproxy \
         --release \
-        --locked \
-        --package rproxy
+        --locked
 
 FROM gcr.io/distroless/cc-debian12 AS runtime
 

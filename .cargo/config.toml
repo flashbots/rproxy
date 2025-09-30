@@ -4,7 +4,7 @@ rustflags = ["--cfg", "tracing_unstable"]
 [target.x86_64-unknown-linux-gnu]
 rustflags = [
     "--cfg", "tracing_unstable",
-    "--remap-path-prefix=/app=.",
+    "--remap-path-prefix", "/app=.",
     "-C", "codegen-units=1",
     "-C", "embed-bitcode=no",
     "-C", "link-arg=-static-libgcc",
@@ -16,7 +16,7 @@ rustflags = [
 [target.aarch64-unknown-linux-gnu]
 rustflags = [
     "--cfg", "tracing_unstable",
-    "--remap-path-prefix=/app=.",
+    "--remap-path-prefix", "/app=.",
     "-C", "codegen-units=1",
     "-C", "embed-bitcode=no",
     "-C", "link-arg=-static-libgcc",
