@@ -1,6 +1,3 @@
-mod proxy_http_bodies;
-pub(crate) use proxy_http_bodies::ProxyHttpRequestBody;
-
 mod proxy_http_inner_authrpc;
 pub(crate) use proxy_http_inner_authrpc::ProxyHttpInnerAuthrpc;
 
@@ -13,7 +10,6 @@ pub(crate) use proxy_http::{
     ProxiedHttpResponse,
     ProxyHttp,
     ProxyHttpRequestInfo,
-    ProxyHttpResponseInfo,
 };
 
 mod proxy_http_inner;
