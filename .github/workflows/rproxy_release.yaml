@@ -63,6 +63,8 @@ jobs:
     needs: extract_version
     if: ${{ github.event.inputs.build_binary == 'true' || github.event_name == 'push' }}
     runs-on: ${{ matrix.configs.runner }}
+    env:
+      VERSION: ${{ needs.extract_version.outputs.VERSION }}
     container:
       image: ubuntu:22.04
     permissions:
@@ -140,7 +142,7 @@ jobs:
       - name: upload the binary artifact
         uses: actions/upload-artifact@v4
         with:
-          name: rproxy-${{ needs.extract_version.outputs.VERSION }}-${{ matrix.configs.target }}
+          name: rproxy-${{ env.VERSION }}-${{ matrix.configs.target }}
           path: target/${{ matrix.configs.target }}/release/rproxy
 
   draft_release:
@@ -149,7 +151,7 @@ jobs:
     needs: [extract_version, build_binary]
     runs-on: warp-ubuntu-latest-x64-16x
     env:
-      VERSION: rproxy/${{ needs.extract_version.outputs.VERSION }}
+      VERSION: ${{ needs.extract_version.outputs.VERSION }}
     permissions:
       contents: write
     steps:
@@ -162,7 +164,7 @@ jobs:
           merge-multiple: false
           path: artifacts
 
-      - name: Record artifacts checksums
+      - name: record artifacts checksums
         working-directory: artifacts
         run: |
           for dir in $( find . -type d -name "rproxy-*" -printf "%f\n" ); do
@@ -213,10 +215,10 @@ jobs:
       - name: checkout sources
         uses: actions/checkout@v4
 
-      - name: Set env
+      - name: set env
         run: |
           platform=${{ matrix.configs.platform }}
-          echo "PLATFORM=${platform//\//-}" >> $GITHUB_ENV
+          echo "PLATFORM=${platform#*/}" >> $GITHUB_ENV
 
       - name: setup docker qemu
         uses: docker/setup-qemu-action@v3
@@ -231,8 +233,11 @@ jobs:
           images: ghcr.io/${{ github.repository }}
           labels: org.opencontainers.image.source=${{ github.repositoryUrl }}
           tags: |
-            type=sha
-            type=raw,value=${{ env.VERSION }}-${{ env.PLATFORM }}
+            type=semver,pattern={{version}},value=${{ env.VERSION }},prefix=v,suffix=-${{ env.PLATFORM }}
+            type=sha,suffix=-${{ env.PLATFORM }}
+
+            # Push latest tag for full version only, not for prerelease versions (i.e. not for v1.2.3-rc1)
+            type=raw,value=latest,enable=${{ !contains(env.VERSION, '-') }},suffix=-${{ env.PLATFORM }}
 
       - name: login to ghcr
         uses: docker/login-action@v3
@@ -252,7 +257,7 @@ jobs:
           context: .
           labels: ${{ steps.meta.outputs.labels }}
           platforms: ${{ matrix.configs.platform }}
-          tags: ghcr.io/${{ github.repository }}:${{ env.VERSION }}-${{ env.PLATFORM }}
+          tags: ${{ steps.meta.outputs.tags }}
 
       - name: export digest
         run: |
@@ -271,6 +276,8 @@ jobs:
   publish_container_index:
     name: publish container index
     runs-on: warp-ubuntu-latest-x64-16x
+    env:
+      VERSION: ${{ needs.extract_version.outputs.VERSION }}
     needs:
       - build_container_images
       - extract_version
@@ -299,8 +306,11 @@ jobs:
           images: ghcr.io/${{ github.repository }}
           labels: org.opencontainers.image.source=${{ github.repositoryUrl }}
           tags: |
+            type=semver,pattern={{version}},value=${{ env.VERSION }},prefix=v
             type=sha
-            type=raw,value=${{ env.VERSION }}
+
+            # Push latest tag for full version only, not for prerelease versions (i.e. not for v1.2.3-rc1)
+            type=raw,value=latest,enable=${{ !contains(env.VERSION, '-') }}
 
       - name: create manifest list and push
         working-directory: /tmp/digests
@@ -314,4 +324,4 @@ jobs:
 
       - name: inspect image
         run: |
-          docker buildx imagetools inspect ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.version }}
+          docker buildx imagetools inspect ghcr.io/${{ github.repository }}:${{ env.VERSION }}
