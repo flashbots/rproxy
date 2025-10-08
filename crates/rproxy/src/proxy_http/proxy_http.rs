@@ -236,7 +236,7 @@ where
         // allow time to flush buffers on close
         socket.set_linger(Some(config.backend_timeout()))?;
 
-        // allow binding to the socket whlie there are still TIME_WAIT conns
+        // allow binding while there are still residual connections in TIME_WAIT
         socket.set_reuse_address(true)?;
 
         if !config.idle_connection_timeout().is_zero() {
@@ -307,7 +307,7 @@ where
                     .http_proxy_failure_count
                     .get_or_create(&LabelsProxy { proxy: P::name() })
                     .inc();
-                return Ok(HttpResponse::BadGateway().finish());
+                return Ok(HttpResponse::BadGateway().body(format!("Backend error: {:?}", err)));
             }
         };
 
