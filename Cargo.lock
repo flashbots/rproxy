@@ -2950,6 +2950,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-rlp",
  "awc",
+ "base64",
  "brotli",
  "bytes",
  "bytestring",

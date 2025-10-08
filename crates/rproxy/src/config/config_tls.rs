@@ -1,5 +1,10 @@
-use std::{fs::File, io::BufReader, sync::OnceLock};
+use std::{
+    fs::File,
+    io::{BufReader, Cursor, Read},
+    sync::OnceLock,
+};
 
+use base64::Engine;
 use clap::Args;
 use rustls::{
     ServerConfig,
@@ -61,19 +66,35 @@ impl ConfigTls {
                         });
                     }
 
-                    Ok(file) => {
-                        let reader = &mut BufReader::new(file);
+                    Ok(mut file) => {
+                        let mut raw = Vec::new();
 
-                        match rustls_pemfile::certs(reader).collect::<Result<Vec<_>, _>>() {
-                            Err(err) => {
-                                errs.push(ConfigTlsError::InvalidCertificate {
-                                    path: self.certificate.clone(),
-                                    err: err.to_string(),
-                                });
+                        if let Err(err) = file.read_to_end(&mut raw) {
+                            errs.push(ConfigTlsError::InvalidCertificate {
+                                path: self.certificate.clone(),
+                                err: err.to_string(),
+                            });
+                        } else {
+                            if let Ok(decoded) =
+                                base64::engine::general_purpose::STANDARD.decode(&raw)
+                            {
+                                raw = decoded;
                             }
 
-                            Ok(res) => {
-                                cert = Some(res);
+                            let mut reader = Cursor::new(raw);
+
+                            match rustls_pemfile::certs(&mut reader).collect::<Result<Vec<_>, _>>()
+                            {
+                                Err(err) => {
+                                    errs.push(ConfigTlsError::InvalidCertificate {
+                                        path: self.certificate.clone(),
+                                        err: err.to_string(),
+                                    });
+                                }
+
+                                Ok(res) => {
+                                    cert = Some(res);
+                                }
                             }
                         }
                     }
@@ -96,26 +117,35 @@ impl ConfigTls {
                         });
                     }
 
-                    Ok(file) => {
-                        let reader = &mut BufReader::new(file);
+                    Ok(mut file) => {
+                        let mut raw = Vec::new();
 
-                        match rustls_pemfile::private_key(reader) {
-                            Err(err) => {
-                                errs.push(ConfigTlsError::InvalidKey {
-                                    path: self.key.clone(),
-                                    err: err.to_string(),
-                                });
+                        if let Err(err) = file.read_to_end(&mut raw) {
+                            errs.push(ConfigTlsError::InvalidKey {
+                                path: self.certificate.clone(),
+                                err: err.to_string(),
+                            });
+                        } else {
+                            if let Ok(decoded) =
+                                base64::engine::general_purpose::STANDARD.decode(&raw)
+                            {
+                                raw = decoded;
                             }
 
-                            Ok(None) => {
-                                errs.push(ConfigTlsError::InvalidKey {
-                                    path: self.key.clone(),
-                                    err: String::from("no key found"),
-                                });
-                            }
+                            let mut reader = Cursor::new(raw);
 
-                            Ok(Some(res)) => {
-                                key = Some(res);
+                            match rustls_pemfile::certs(&mut reader).collect::<Result<Vec<_>, _>>()
+                            {
+                                Err(err) => {
+                                    errs.push(ConfigTlsError::InvalidKey {
+                                        path: self.certificate.clone(),
+                                        err: err.to_string(),
+                                    });
+                                }
+
+                                Ok(res) => {
+                                    cert = Some(res);
+                                }
                             }
                         }
                     }
@@ -154,10 +184,17 @@ impl ConfigTls {
 
     pub(crate) fn key(&self) -> &PrivateKeyDer<'static> {
         TLS_KEY.get_or_init(|| {
-            let reader =
-                &mut BufReader::new(File::open(self.key.clone()).expect(ALREADY_VALIDATED));
+            let mut file = File::open(self.key.clone()).expect(ALREADY_VALIDATED);
+            let mut raw = Vec::new();
+            file.read_to_end(&mut raw).expect(ALREADY_VALIDATED);
 
-            rustls_pemfile::private_key(reader)
+            if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(&raw) {
+                raw = decoded;
+            }
+
+            let mut reader = Cursor::new(raw);
+
+            rustls_pemfile::private_key(&mut reader)
                 .expect(ALREADY_VALIDATED)
                 .expect(ALREADY_VALIDATED)
                 .clone_key()
@@ -166,10 +203,17 @@ impl ConfigTls {
 
     pub(crate) fn certificate(&self) -> &Vec<rustls::pki_types::CertificateDer<'static>> {
         TLS_CERT.get_or_init(|| {
-            let reader =
-                &mut BufReader::new(File::open(self.certificate.clone()).expect(ALREADY_VALIDATED));
+            let mut file = File::open(self.certificate.clone()).expect(ALREADY_VALIDATED);
+            let mut raw = Vec::new();
+            file.read_to_end(&mut raw).expect(ALREADY_VALIDATED);
 
-            rustls_pemfile::certs(reader)
+            if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(&raw) {
+                raw = decoded;
+            }
+
+            let mut reader = Cursor::new(raw);
+
+            rustls_pemfile::certs(&mut reader)
                 .collect::<Result<Vec<_>, _>>()
                 .expect(ALREADY_VALIDATED)
                 .into_iter()
