@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use prometheus_client::encoding::EncodeLabelSet;
 
 // LabelsProxy ---------------------------------------------------------
@@ -12,8 +14,7 @@ pub(crate) struct LabelsProxy {
 #[derive(Clone, Debug, Default, Hash, PartialEq, Eq, EncodeLabelSet)]
 pub(crate) struct LabelsProxyHttpJrpc {
     pub(crate) proxy: &'static str,
-
-    pub(crate) jrpc_method: String,
+    pub(crate) jrpc_method: Cow<'static, str>,
 }
 
 // LabelsProxyWs -------------------------------------------------------

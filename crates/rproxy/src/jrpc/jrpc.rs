@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use serde::Deserialize;
 
 // JrpcError -----------------------------------------------------------
@@ -12,7 +14,7 @@ pub(crate) struct JrpcError {
 
 #[derive(Deserialize)]
 pub(crate) struct JrpcRequestMeta {
-    pub(crate) method: String,
+    pub(crate) method: Cow<'static, str>,
 }
 
 // JrpcResponseMeta ----------------------------------------------------

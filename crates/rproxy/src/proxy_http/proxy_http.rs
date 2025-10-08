@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     fmt::Debug,
     marker::PhantomData,
     mem,
@@ -390,20 +391,20 @@ where
                         error = ?err,
                         "Failed to parse json-rpc request",
                     );
-                    String::from("unknown")
+                    Cow::Borrowed("")
                 }
             };
 
-        if inner.should_mirror(jrpc_method.as_str(), &cli_req, &bck_res) {
+        if inner.should_mirror(jrpc_method.clone(), &cli_req, &bck_res) {
             for peer in peers.iter() {
                 let mut req = cli_req.clone();
-                req.info.jrpc_method = Some(jrpc_method.clone());
+                req.info.jrpc_method = jrpc_method.clone();
                 peer.do_send(req.clone());
             }
         }
 
         Self::maybe_log_proxied_request_and_response(
-            jrpc_method.as_str(),
+            jrpc_method.clone(),
             &cli_req,
             &bck_res,
             inner.clone(),
@@ -430,9 +431,9 @@ where
                 decompress(mrr_res.body.clone(), mrr_res.size, mrr_res.info.content_encoding());
         }
 
-        let jrpc_method = cli_req.info().jrpc_method.as_ref().map_or("unknown", |v| v.as_str());
+        let jrpc_method = cli_req.info().jrpc_method.clone();
         Self::maybe_log_mirrored_request(
-            jrpc_method,
+            jrpc_method.clone(),
             &cli_req,
             &mrr_res,
             worker_id,
@@ -440,15 +441,12 @@ where
         );
         metrics
             .http_mirror_success_count
-            .get_or_create(&LabelsProxyHttpJrpc {
-                proxy: P::name(),
-                jrpc_method: String::from(jrpc_method),
-            })
+            .get_or_create(&LabelsProxyHttpJrpc { proxy: P::name(), jrpc_method })
             .inc();
     }
 
     fn maybe_log_proxied_request_and_response(
-        jrpc_method: &str,
+        jrpc_method: Cow<'_, str>,
         req: &ProxiedHttpRequest,
         res: &ProxiedHttpResponse,
         inner: Arc<P>,
@@ -479,7 +477,7 @@ where
             request_id = %req.info.id,
             connection_id = %req.info.connection_id,
             worker_id = %worker_id,
-            jrpc_method = jrpc_method,
+            jrpc_method = jrpc_method.as_ref(),
             http_status = res.status(),
             remote_addr = req.info().remote_addr,
             ts_request_received = req.start().format(&Iso8601::DEFAULT).unwrap_or_default(),
@@ -492,7 +490,7 @@ where
     }
 
     fn maybe_log_mirrored_request(
-        jrpc_method: &str,
+        jrpc_method: Cow<'_, str>,
         req: &ProxiedHttpRequest,
         res: &ProxiedHttpResponse,
         worker_id: Uuid,
@@ -521,7 +519,7 @@ where
             request_id = %req.info.id,
             connection_id = %req.info.connection_id,
             worker_id = %worker_id,
-            jrpc_method = jrpc_method,
+            jrpc_method = jrpc_method.as_ref(),
             http_status = res.status(),
             remote_addr = req.info().remote_addr,
             ts_request_received = req.start().format(&Iso8601::DEFAULT).unwrap_or_default(),
@@ -685,7 +683,7 @@ where
     }
 
     fn emit_metrics_on_proxy_success(
-        jrpc_method: String,
+        jrpc_method: Cow<'static, str>,
         req: &ProxiedHttpRequest,
         res: &ProxiedHttpResponse,
         metrics: Arc<Metrics>,
@@ -1010,7 +1008,7 @@ pub(crate) struct ProxyHttpRequestInfo {
     path: String,
     path_and_query: String,
     headers: HeaderMap,
-    jrpc_method: Option<String>,
+    jrpc_method: Cow<'static, str>,
 }
 
 impl ProxyHttpRequestInfo {
@@ -1085,7 +1083,7 @@ impl ProxyHttpRequestInfo {
             path,
             path_and_query,
             headers,
-            jrpc_method: None,
+            jrpc_method: Cow::Borrowed(""),
         }
     }
 

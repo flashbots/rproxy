@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use crate::{
     config::ConfigProxyHttp,
     proxy::ProxyInner,
@@ -16,7 +18,7 @@ where
 
     fn should_mirror(
         &self,
-        jrpc_method: &str,
+        jrpc_method: Cow<'_, str>,
         req: &ProxiedHttpRequest,
         res: &ProxiedHttpResponse,
     ) -> bool;

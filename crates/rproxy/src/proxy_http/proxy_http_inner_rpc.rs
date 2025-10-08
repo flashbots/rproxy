@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use tracing::warn;
 
 use crate::{
@@ -34,11 +36,11 @@ impl ProxyHttpInner<ConfigRpc> for ProxyHttpInnerRpc {
 
     fn should_mirror(
         &self,
-        jrpc_method: &str,
+        jrpc_method: Cow<'_, str>,
         _: &ProxiedHttpRequest,
         res: &ProxiedHttpResponse,
     ) -> bool {
-        if !matches!(jrpc_method, "eth_sendRawTransaction" | "eth_sendBundle") {
+        if !matches!(jrpc_method.as_ref(), "eth_sendRawTransaction" | "eth_sendBundle") {
             return false;
         }
 

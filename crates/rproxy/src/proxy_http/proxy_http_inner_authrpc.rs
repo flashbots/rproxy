@@ -31,7 +31,7 @@ impl ProxyHttpInner<ConfigAuthrpc> for ProxyHttpInnerAuthrpc {
 
     fn should_mirror(
         &self,
-        jrpc_method: &str,
+        jrpc_method: std::borrow::Cow<'_, str>,
         _: &ProxiedHttpRequest,
         _: &ProxiedHttpResponse,
     ) -> bool {
