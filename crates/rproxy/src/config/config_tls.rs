@@ -1,6 +1,6 @@
 use std::{
     fs::File,
-    io::{BufReader, Cursor, Read},
+    io::{Cursor, Read},
     sync::OnceLock,
 };
 
@@ -49,7 +49,7 @@ impl ConfigTls {
         let mut errs: Vec<ConfigTlsError> = vec![];
 
         let mut cert: Option<Vec<CertificateDer>> = None;
-        let mut key: Option<PrivateKeyDer> = None;
+        let key: Option<PrivateKeyDer> = None;
 
         // certificate
         {

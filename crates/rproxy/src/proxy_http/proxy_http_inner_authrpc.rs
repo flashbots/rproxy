@@ -1,5 +1,8 @@
+use std::borrow::Cow;
+
 use crate::{
     config::ConfigAuthrpc,
+    jrpc::JrpcRequestMetaMaybeBatch,
     proxy::ProxyInner,
     proxy_http::{ProxiedHttpRequest, ProxiedHttpResponse, ProxyHttpInner},
 };
@@ -31,18 +34,32 @@ impl ProxyHttpInner<ConfigAuthrpc> for ProxyHttpInnerAuthrpc {
 
     fn should_mirror(
         &self,
-        jrpc_method: std::borrow::Cow<'_, str>,
+        jrpc: &JrpcRequestMetaMaybeBatch,
         _: &ProxiedHttpRequest,
         _: &ProxiedHttpResponse,
     ) -> bool {
-        if true &&
-            !jrpc_method.starts_with("engine_forkchoiceUpdated") &&
-            !jrpc_method.starts_with("engine_newPayload") &&
-            !jrpc_method.starts_with("miner_setMaxDASize")
-        {
-            return false;
+        fn should_mirror(method: Cow<'static, str>) -> bool {
+            if true &&
+                !method.starts_with("engine_forkchoiceUpdated") &&
+                !method.starts_with("engine_newPayload") &&
+                !method.starts_with("miner_setMaxDASize")
+            {
+                return false;
+            }
+            return true;
         }
 
-        return true
+        match jrpc {
+            JrpcRequestMetaMaybeBatch::Single(jrpc) => should_mirror(jrpc.method.clone()),
+
+            JrpcRequestMetaMaybeBatch::Batch(batch) => {
+                for jrpc in batch.iter() {
+                    if should_mirror(jrpc.method.clone()) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+        }
     }
 }

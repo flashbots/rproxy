@@ -143,12 +143,12 @@ pub(crate) struct ConfigRpc {
     #[arg(
         env="RPROXY_RPC_PEERS",
         help_heading = "rpc",
-        long("rpc-peer"),
-        name("rpc_peer"),
+        long("rpc-mirroring-peer"),
+        name("rpc_mirroring_peer"),
         num_args = 1..,
         value_name="url"
     )]
-    pub(crate) peer_urls: Vec<String>,
+    pub(crate) mirroring_peer_urls: Vec<String>,
 
     /// remove rpc backend from peers
     #[arg(
@@ -187,8 +187,8 @@ impl ConfigRpc {
             })
         });
 
-        // peer_urls
-        for peer_url in self.peer_urls.iter() {
+        // mirroring_peer_urls
+        for peer_url in self.mirroring_peer_urls.iter() {
             match Url::parse(&peer_url) {
                 Ok(url) => {
                     if let None = url.host() {
@@ -228,7 +228,7 @@ impl ConfigRpc {
 
         let local_ips = get_all_local_ip_addresses();
 
-        self.peer_urls.retain(|url| {
+        self.mirroring_peer_urls.retain(|url| {
             let peer_url = Url::parse(&url).expect(ALREADY_VALIDATED);
             let peer_host = peer_url.host_str().expect(ALREADY_VALIDATED);
 
@@ -322,8 +322,8 @@ impl ConfigProxyHttp for ConfigRpc {
     }
 
     #[inline]
-    fn peer_urls(&self) -> Vec<Url> {
-        self.peer_urls
+    fn mirroring_peer_urls(&self) -> Vec<Url> {
+        self.mirroring_peer_urls
             .iter()
             .map(|peer_url| peer_url.parse::<Url>().expect(ALREADY_VALIDATED))
             .collect()

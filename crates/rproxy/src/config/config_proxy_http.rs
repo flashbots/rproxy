@@ -15,5 +15,5 @@ pub(crate) trait ConfigProxyHttp: Clone + Send + Unpin + 'static {
     fn log_proxied_requests(&self) -> bool;
     fn log_proxied_responses(&self) -> bool;
     fn log_sanitise(&self) -> bool;
-    fn peer_urls(&self) -> Vec<Url>;
+    fn mirroring_peer_urls(&self) -> Vec<Url>;
 }

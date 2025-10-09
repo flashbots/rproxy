@@ -1,7 +1,6 @@
-use std::borrow::Cow;
-
 use crate::{
     config::ConfigProxyHttp,
+    jrpc::JrpcRequestMetaMaybeBatch,
     proxy::ProxyInner,
     proxy_http::{ProxiedHttpRequest, ProxiedHttpResponse},
 };
@@ -18,7 +17,7 @@ where
 
     fn should_mirror(
         &self,
-        jrpc_method: Cow<'_, str>,
+        jrpc: &JrpcRequestMetaMaybeBatch,
         req: &ProxiedHttpRequest,
         res: &ProxiedHttpResponse,
     ) -> bool;

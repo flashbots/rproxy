@@ -45,7 +45,7 @@ use x509_parser::asn1_rs::ToStatic;
 
 use crate::{
     config::{ConfigProxyHttp, ConfigTls, PARALLELISM},
-    jrpc::JrpcRequestMeta,
+    jrpc::JrpcRequestMetaMaybeBatch,
     metrics::{LabelsProxy, LabelsProxyHttpJrpc, Metrics},
     proxy::{Proxy, ProxyConnectionGuard},
     proxy_http::ProxyHttpInner,
@@ -94,7 +94,7 @@ where
 
         let peers: Arc<Vec<actix::Addr<ProxyHttpBackendEndpoint<C, P>>>> = Arc::new(
             config
-                .peer_urls()
+                .mirroring_peer_urls()
                 .iter()
                 .map(|peer_url| {
                     ProxyHttpBackendEndpoint::new(
@@ -299,6 +299,7 @@ where
                     request_id = %id,
                     connection_id = %connection_id,
                     worker_id = %this.id,
+                    backend_url = %this.backend.url,
                     error = ?err,
                     "Failed to proxy a request",
                 );
@@ -379,39 +380,38 @@ where
                 decompress(bck_res.body.clone(), bck_res.size, bck_res.info.content_encoding());
         }
 
-        let jrpc_method =
-            match serde_json::from_slice::<JrpcRequestMeta>(&cli_req.decompressed_body) {
-                Ok(jrpc) => jrpc.method,
-                Err(err) => {
-                    warn!(
-                        proxy = P::name(),
-                        request_id = %cli_req.info.id,
-                        connection_id = %cli_req.info.connection_id,
-                        worker_id = %worker_id,
-                        error = ?err,
-                        "Failed to parse json-rpc request",
-                    );
-                    Cow::Borrowed("")
+        match serde_json::from_slice::<JrpcRequestMetaMaybeBatch>(&cli_req.decompressed_body) {
+            Ok(jrpc) => {
+                if inner.should_mirror(&jrpc, &cli_req, &bck_res) {
+                    for peer in peers.iter() {
+                        let mut req = cli_req.clone();
+                        req.info.jrpc_method = jrpc.method();
+                        peer.do_send(req.clone());
+                    }
                 }
-            };
 
-        if inner.should_mirror(jrpc_method.clone(), &cli_req, &bck_res) {
-            for peer in peers.iter() {
-                let mut req = cli_req.clone();
-                req.info.jrpc_method = jrpc_method.clone();
-                peer.do_send(req.clone());
+                Self::maybe_log_proxied_request_and_response(
+                    &jrpc,
+                    &cli_req,
+                    &bck_res,
+                    inner.clone(),
+                    worker_id,
+                );
+
+                Self::emit_metrics_on_proxy_success(&jrpc, &cli_req, &bck_res, metrics.clone());
+            }
+
+            Err(err) => {
+                warn!(
+                    proxy = P::name(),
+                    request_id = %cli_req.info.id,
+                    connection_id = %cli_req.info.connection_id,
+                    worker_id = %worker_id,
+                    error = ?err,
+                    "Failed to parse json-rpc request",
+                );
             }
         }
-
-        Self::maybe_log_proxied_request_and_response(
-            jrpc_method.clone(),
-            &cli_req,
-            &bck_res,
-            inner.clone(),
-            worker_id,
-        );
-
-        Self::emit_metrics_on_proxy_success(jrpc_method, &cli_req, &bck_res, metrics.clone());
     }
 
     fn postprocess_mirrored_response(
@@ -446,7 +446,7 @@ where
     }
 
     fn maybe_log_proxied_request_and_response(
-        jrpc_method: Cow<'_, str>,
+        jrpc: &JrpcRequestMetaMaybeBatch,
         req: &ProxiedHttpRequest,
         res: &ProxiedHttpResponse,
         inner: Arc<P>,
@@ -472,12 +472,19 @@ where
             Loggable(&serde_json::Value::Null)
         };
 
+        let jrpc_method = match jrpc {
+            JrpcRequestMetaMaybeBatch::Single(jrpc) => jrpc.method.clone().into_owned(),
+            JrpcRequestMetaMaybeBatch::Batch(batch) => {
+                batch.iter().map(|jrpc| jrpc.method.clone()).collect::<Vec<_>>().join("+")
+            }
+        };
+
         info!(
             proxy = P::name(),
             request_id = %req.info.id,
             connection_id = %req.info.connection_id,
             worker_id = %worker_id,
-            jrpc_method = jrpc_method.as_ref(),
+            jrpc_method = jrpc_method,
             http_status = res.status(),
             remote_addr = req.info().remote_addr,
             ts_request_received = req.start().format(&Iso8601::DEFAULT).unwrap_or_default(),
@@ -683,12 +690,21 @@ where
     }
 
     fn emit_metrics_on_proxy_success(
-        jrpc_method: Cow<'static, str>,
+        jrpc: &JrpcRequestMetaMaybeBatch,
         req: &ProxiedHttpRequest,
         res: &ProxiedHttpResponse,
         metrics: Arc<Metrics>,
     ) {
-        let metric_labels_jrpc = LabelsProxyHttpJrpc { jrpc_method, proxy: P::name() };
+        let metric_labels_jrpc = match jrpc {
+            JrpcRequestMetaMaybeBatch::Single(jrpc) => {
+                LabelsProxyHttpJrpc { jrpc_method: jrpc.method.clone(), proxy: P::name() }
+            }
+
+            JrpcRequestMetaMaybeBatch::Batch(_) => {
+                LabelsProxyHttpJrpc { jrpc_method: Cow::Borrowed("batch"), proxy: P::name() }
+            }
+        };
+
         let latency_backend = 1000000.0 * (res.start() - req.end()).as_seconds_f64();
         let latency_total = 1000000.0 * (res.end() - req.start()).as_seconds_f64();
 
@@ -711,7 +727,19 @@ where
             .record(latency_total.round() as i64);
 
         // proxy_success_count
-        metrics.http_proxy_success_count.get_or_create(&metric_labels_jrpc).inc();
+        match jrpc {
+            JrpcRequestMetaMaybeBatch::Single(_) => {
+                metrics.http_proxy_success_count.get_or_create(&metric_labels_jrpc).inc();
+            }
+
+            JrpcRequestMetaMaybeBatch::Batch(batch) => {
+                for jrpc in batch.iter() {
+                    let metric_labels_jrpc =
+                        LabelsProxyHttpJrpc { jrpc_method: jrpc.method.clone(), proxy: P::name() };
+                    metrics.http_proxy_success_count.get_or_create(&metric_labels_jrpc).inc();
+                }
+            }
+        }
 
         // proxied_request_size
         metrics.http_request_size.get_or_create_owned(&metric_labels_jrpc).record(req.size as i64);
