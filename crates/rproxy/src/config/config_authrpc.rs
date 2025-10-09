@@ -9,7 +9,7 @@ use tracing::warn;
 use url::Url;
 
 use crate::{
-    config::{ALREADY_VALIDATED, ConfigProxyHttp},
+    config::{ALREADY_VALIDATED, ConfigProxyHttp, ConfigProxyHttpMirroringStrategy},
     utils::get_all_local_ip_addresses,
 };
 
@@ -132,7 +132,7 @@ pub(crate) struct ConfigAuthrpc {
 
     /// list of authrpc peers urls to mirror the requests to
     #[arg(
-        env="RPROXY_AUTHRPC_PEERS",
+        env="RPROXY_AUTHRPC_MIRRORING_PEERS",
         help_heading = "authrpc",
         long("authrpc-mirroring-peer"),
         name("authrpc_mirroring_peer"),
@@ -140,6 +140,17 @@ pub(crate) struct ConfigAuthrpc {
         value_name="url"
     )]
     pub(crate) mirroring_peer_urls: Vec<String>,
+
+    #[arg(
+        default_value = "fan-out",
+        env = "RPROXY_AUTHRPC_MIRRORING_STRATEGY",
+        help_heading = "authrpc",
+        long("authrpc-mirroring-strategy"),
+        name("authrpc_mirroring_strategy"),
+        value_name = "strategy"
+    )]
+    #[clap(value_enum)]
+    pub(crate) mirroring_strategy: ConfigProxyHttpMirroringStrategy,
 
     /// remove authrpc backend from peers
     #[arg(
@@ -321,6 +332,11 @@ impl ConfigProxyHttp for ConfigAuthrpc {
             .iter()
             .map(|peer_url| peer_url.parse::<Url>().expect(ALREADY_VALIDATED))
             .collect()
+    }
+
+    #[inline]
+    fn mirroring_strategy(&self) -> &ConfigProxyHttpMirroringStrategy {
+        &self.mirroring_strategy
     }
 }
 

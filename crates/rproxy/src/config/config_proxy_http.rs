@@ -16,4 +16,22 @@ pub(crate) trait ConfigProxyHttp: Clone + Send + Unpin + 'static {
     fn log_proxied_responses(&self) -> bool;
     fn log_sanitise(&self) -> bool;
     fn mirroring_peer_urls(&self) -> Vec<Url>;
+    fn mirroring_strategy(&self) -> &ConfigProxyHttpMirroringStrategy;
+}
+
+// ConfigProxyHttpMirroringStrategy ------------------------------------
+
+#[derive(Clone, Debug, clap::ValueEnum)]
+pub(crate) enum ConfigProxyHttpMirroringStrategy {
+    /// mirror to all configured peers
+    #[value(name = "fan-out")]
+    FanOut,
+
+    /// mirror to only 1 peer at a time, in round-robin fashion
+    #[value(name = "round-robin")]
+    RoundRobin,
+
+    /// mirror to 2 peers at a time, in round-robin fashion
+    #[value(name = "round-robin-pairs")]
+    RoundRobinPairs,
 }

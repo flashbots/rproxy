@@ -9,7 +9,12 @@ use tracing::warn;
 use url::Url;
 
 use crate::{
-    config::{ALREADY_VALIDATED, ConfigProxyHttp, PARALLELISM_STRING},
+    config::{
+        ALREADY_VALIDATED,
+        ConfigProxyHttp,
+        ConfigProxyHttpMirroringStrategy,
+        PARALLELISM_STRING,
+    },
     utils::get_all_local_ip_addresses,
 };
 
@@ -141,7 +146,7 @@ pub(crate) struct ConfigRpc {
 
     /// list of rpc peers urls to mirror the requests to
     #[arg(
-        env="RPROXY_RPC_PEERS",
+        env="RPROXY_RPC_MIRRORING_PEERS",
         help_heading = "rpc",
         long("rpc-mirroring-peer"),
         name("rpc_mirroring_peer"),
@@ -149,6 +154,17 @@ pub(crate) struct ConfigRpc {
         value_name="url"
     )]
     pub(crate) mirroring_peer_urls: Vec<String>,
+
+    #[arg(
+        default_value = "fan-out",
+        env = "RPROXY_RPC_MIRRORING_STRATEGY",
+        help_heading = "rpc",
+        long("rpc-mirroring-strategy"),
+        name("rpc_mirroring_strategy"),
+        value_name = "strategy"
+    )]
+    #[clap(value_enum)]
+    pub(crate) mirroring_strategy: ConfigProxyHttpMirroringStrategy,
 
     /// remove rpc backend from peers
     #[arg(
@@ -327,6 +343,11 @@ impl ConfigProxyHttp for ConfigRpc {
             .iter()
             .map(|peer_url| peer_url.parse::<Url>().expect(ALREADY_VALIDATED))
             .collect()
+    }
+
+    #[inline]
+    fn mirroring_strategy(&self) -> &ConfigProxyHttpMirroringStrategy {
+        &self.mirroring_strategy
     }
 }
 

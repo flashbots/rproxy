@@ -5,7 +5,10 @@ use std::{
     mem,
     pin::Pin,
     str::FromStr,
-    sync::{Arc, atomic::AtomicI64},
+    sync::{
+        Arc,
+        atomic::{AtomicI64, AtomicUsize, Ordering},
+    },
     task::{Context, Poll},
 };
 
@@ -44,7 +47,7 @@ use uuid::Uuid;
 use x509_parser::asn1_rs::ToStatic;
 
 use crate::{
-    config::{ConfigProxyHttp, ConfigTls, PARALLELISM},
+    config::{ConfigProxyHttp, ConfigProxyHttpMirroringStrategy, ConfigTls, PARALLELISM},
     jrpc::JrpcRequestMetaMaybeBatch,
     metrics::{LabelsProxy, LabelsProxyHttpJrpc, Metrics},
     proxy::{Proxy, ProxyConnectionGuard},
@@ -115,6 +118,7 @@ where
             inner: inner.clone(),
             metrics: shared.metrics.clone(),
             peers: peers.clone(),
+            peer_index: AtomicUsize::new(0),
         }
         .start();
 
@@ -369,6 +373,7 @@ where
         metrics: Arc<Metrics>,
         worker_id: Uuid,
         peers: Arc<Vec<actix::Addr<ProxyHttpBackendEndpoint<C, P>>>>,
+        mut peer_index: usize,
     ) {
         if cli_req.decompressed_size < cli_req.size {
             (cli_req.decompressed_body, cli_req.decompressed_size) =
@@ -383,10 +388,22 @@ where
         match serde_json::from_slice::<JrpcRequestMetaMaybeBatch>(&cli_req.decompressed_body) {
             Ok(jrpc) => {
                 if inner.should_mirror(&jrpc, &cli_req, &bck_res) {
-                    for peer in peers.iter() {
+                    let count = match inner.config().mirroring_strategy() {
+                        ConfigProxyHttpMirroringStrategy::FanOut => peers.len(),
+                        ConfigProxyHttpMirroringStrategy::RoundRobin => 1,
+                        ConfigProxyHttpMirroringStrategy::RoundRobinPairs => 2,
+                    };
+
+                    for _ in 0..count {
+                        let peer = &peers[peer_index];
                         let mut req = cli_req.clone();
                         req.info.jrpc_method = jrpc.method();
                         peer.do_send(req.clone());
+
+                        peer_index += 1;
+                        if peer_index >= peers.len() {
+                            peer_index = 0;
+                        }
                     }
                 }
 
@@ -833,6 +850,7 @@ where
     inner: Arc<P>,
     worker_id: Uuid,
     peers: Arc<Vec<actix::Addr<ProxyHttpBackendEndpoint<C, P>>>>,
+    peer_index: AtomicUsize,
     metrics: Arc<Metrics>,
 }
 
@@ -860,15 +878,22 @@ where
         let metrics = self.metrics.clone();
         let worker_id = self.worker_id.clone();
         let peers = self.peers.clone();
+        let mut peer_index = self.peer_index.load(Ordering::Relaxed);
 
         ctx.spawn(
             async move {
                 ProxyHttp::<C, P>::finalise_proxying(
-                    msg.req, msg.res, inner, metrics, worker_id, peers,
+                    msg.req, msg.res, inner, metrics, worker_id, peers, peer_index,
                 );
             }
             .into_actor(self),
         );
+
+        peer_index += 1;
+        if peer_index >= self.peers.len() {
+            peer_index = 0;
+        }
+        self.peer_index.store(peer_index, Ordering::Relaxed);
     }
 }
 
