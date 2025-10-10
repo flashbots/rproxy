@@ -49,7 +49,7 @@ use x509_parser::asn1_rs::ToStatic;
 use crate::{
     config::{ConfigProxyHttp, ConfigProxyHttpMirroringStrategy, ConfigTls, PARALLELISM},
     jrpc::JrpcRequestMetaMaybeBatch,
-    metrics::{LabelsProxy, LabelsProxyHttpJrpc, Metrics},
+    metrics::{LabelsProxy, LabelsProxyClientInfo, LabelsProxyHttpJrpc, Metrics},
     proxy::{Proxy, ProxyConnectionGuard},
     proxy_http::ProxyHttpInner,
     utils::{Loggable, decompress, is_hop_by_hop_header, raw_transaction_to_hash},
@@ -132,6 +132,8 @@ where
         canceller: tokio_util::sync::CancellationToken,
         resetter: broadcast::Sender<()>,
     ) -> Result<(), Box<dyn std::error::Error + Send>> {
+        let listen_address = config.listen_address().clone();
+
         let listener = match Self::listen(&config) {
             Ok(listener) => listener,
             Err(err) => {
@@ -165,6 +167,7 @@ where
 
         info!(
             proxy = P::name(),
+            listen_address = %listen_address,
             workers_count = workers_count,
             max_concurrent_requests_per_worker = max_concurrent_requests_per_worker,
             "Starting http-proxy..."
@@ -286,6 +289,20 @@ where
         this: web::Data<Self>,
     ) -> Result<HttpResponse, actix_web::Error> {
         let timestamp = UtcDateTime::now();
+
+        if let Some(user_agent) = cli_req.headers().get(header::USER_AGENT) &&
+            !user_agent.is_empty() &&
+            let Ok(user_agent) = user_agent.to_str()
+        {
+            this.shared
+                .metrics
+                .client_info
+                .get_or_create(&LabelsProxyClientInfo {
+                    proxy: P::name(),
+                    user_agent: user_agent.to_string(),
+                })
+                .inc();
+        }
 
         let info = ProxyHttpRequestInfo::new(&cli_req, cli_req.conn_data::<ProxyConnectionGuard>());
 

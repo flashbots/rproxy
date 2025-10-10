@@ -9,6 +9,14 @@ pub(crate) struct LabelsProxy {
     pub(crate) proxy: &'static str,
 }
 
+// LabelsProxyClientInfo -----------------------------------------------
+
+#[derive(Clone, Debug, Default, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub(crate) struct LabelsProxyClientInfo {
+    pub(crate) proxy: &'static str,
+    pub(crate) user_agent: String,
+}
+
 // LabelsProxyHttpJrpc -------------------------------------------------
 
 #[derive(Clone, Debug, Default, Hash, PartialEq, Eq, EncodeLabelSet)]

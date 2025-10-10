@@ -152,14 +152,14 @@ pub(crate) struct ConfigAuthrpc {
     #[clap(value_enum)]
     pub(crate) mirroring_strategy: ConfigProxyHttpMirroringStrategy,
 
-    /// remove authrpc backend from peers
+    /// remove authrpc backend from mirroring peers
     #[arg(
-        env = "RPROXY_AUTHRPC_REMOVE_BACKEND_FROM_PEERS",
+        env = "RPROXY_AUTHRPC_REMOVE_BACKEND_FROM_MIRRORING_PEERS",
         help_heading = "authrpc",
-        long("authrpc-remove-backend-from-peers"),
-        name("authrpc_remove_backend_from_peers")
+        long("authrpc-remove-backend-from-mirroring-peers"),
+        name("authrpc_remove_backend_from_mirroring_peers")
     )]
-    pub(crate) remove_backend_from_peers: bool,
+    pub(crate) remove_backend_from_mirroring_peers: bool,
 }
 
 impl ConfigAuthrpc {
@@ -218,60 +218,62 @@ impl ConfigAuthrpc {
             return;
         }
 
-        let backend_url = Url::parse(&self.backend_url.clone()).expect(ALREADY_VALIDATED);
-        let backend_host = backend_url.host_str().expect(ALREADY_VALIDATED);
+        if self.remove_backend_from_mirroring_peers {
+            let backend_url = Url::parse(&self.backend_url.clone()).expect(ALREADY_VALIDATED);
+            let backend_host = backend_url.host_str().expect(ALREADY_VALIDATED);
 
-        let backend_ips: Vec<IpAddr> = match format!("{}:0", backend_host).to_socket_addrs() {
-            Ok(res) => res,
-            Err(err) => {
-                warn!(host = backend_host, error = ?err, "Failed to resolve backend host");
-                vec![].into_iter()
-            }
-        }
-        .map(|addr| addr.ip())
-        .collect();
-
-        let local_ips = get_all_local_ip_addresses();
-
-        self.mirroring_peer_urls.retain(|url| {
-            let peer_url = Url::parse(&url).expect(ALREADY_VALIDATED);
-            let peer_host = peer_url.host_str().expect(ALREADY_VALIDATED);
-
-            if !peer_url.port().eq(&backend_url.port()) {
-                // if ports don't match, keep the peer
-                return true;
-            }
-
-            if peer_url.host().eq(&backend_url.host()) {
-                // if backend's and peer's hostnames are exact match, drop the peer
-                return false;
-            }
-
-            let peer_ips: Vec<IpAddr> = match format!("{}:0", peer_host).to_socket_addrs() {
+            let backend_ips: Vec<IpAddr> = match format!("{}:0", backend_host).to_socket_addrs() {
                 Ok(res) => res,
                 Err(err) => {
-                    warn!(host = peer_host, error = ?err, "Failed to resolve peer host");
+                    warn!(host = backend_host, error = ?err, "Failed to resolve backend host");
                     vec![].into_iter()
                 }
             }
             .map(|addr| addr.ip())
             .collect();
 
-            if peer_ips.iter().any(|peer_ip| backend_ips.contains(peer_ip)) {
-                // if peer's IPs overlap with backend's, drop the peer
-                return false;
-            }
+            let local_ips = get_all_local_ip_addresses();
 
-            if backend_ips.iter().any(|backend_ip| backend_ip.is_loopback()) &&
-                peer_ips.iter().any(|peer_ip| local_ips.contains(peer_ip))
-            {
-                // if backend is loopback and peer resolves to one of the local addresses,
-                // drop the peer
-                return false;
-            }
+            self.mirroring_peer_urls.retain(|url| {
+                let peer_url = Url::parse(&url).expect(ALREADY_VALIDATED);
+                let peer_host = peer_url.host_str().expect(ALREADY_VALIDATED);
 
-            true
-        });
+                if !peer_url.port().eq(&backend_url.port()) {
+                    // if ports don't match, keep the peer
+                    return true;
+                }
+
+                if peer_url.host().eq(&backend_url.host()) {
+                    // if backend's and peer's hostnames are exact match, drop the peer
+                    return false;
+                }
+
+                let peer_ips: Vec<IpAddr> = match format!("{}:0", peer_host).to_socket_addrs() {
+                    Ok(res) => res,
+                    Err(err) => {
+                        warn!(host = peer_host, error = ?err, "Failed to resolve peer host");
+                        vec![].into_iter()
+                    }
+                }
+                .map(|addr| addr.ip())
+                .collect();
+
+                if peer_ips.iter().any(|peer_ip| backend_ips.contains(peer_ip)) {
+                    // if peer's IPs overlap with backend's, drop the peer
+                    return false;
+                }
+
+                if backend_ips.iter().any(|backend_ip| backend_ip.is_loopback()) &&
+                    peer_ips.iter().any(|peer_ip| local_ips.contains(peer_ip))
+                {
+                    // if backend is loopback and peer resolves to one of the local addresses,
+                    // drop the peer
+                    return false;
+                }
+
+                true
+            });
+        }
     }
 }
 

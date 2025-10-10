@@ -18,7 +18,13 @@ use tracing::{error, info};
 
 use crate::{
     config::ConfigMetrics,
-    metrics::{Candlestick, LabelsProxy, LabelsProxyHttpJrpc, LabelsProxyWs},
+    metrics::{
+        Candlestick,
+        LabelsProxy,
+        LabelsProxyClientInfo,
+        LabelsProxyHttpJrpc,
+        LabelsProxyWs,
+    },
 };
 
 // Metrics -------------------------------------------------------------
@@ -30,6 +36,7 @@ pub(crate) struct Metrics {
     pub(crate) client_connections_active_count: Family<LabelsProxy, Gauge>,
     pub(crate) client_connections_established_count: Family<LabelsProxy, Counter>,
     pub(crate) client_connections_closed_count: Family<LabelsProxy, Counter>,
+    pub(crate) client_info: Family<LabelsProxyClientInfo, Counter>,
 
     pub(crate) http_latency_backend: Family<LabelsProxyHttpJrpc, Candlestick>,
     pub(crate) http_latency_delta: Family<LabelsProxyHttpJrpc, Candlestick>,
@@ -70,6 +77,8 @@ impl Metrics {
             client_connections_established_count: Family::default(),
             client_connections_closed_count: Family::default(),
 
+            client_info: Family::default(),
+
             http_latency_backend: Family::default(),
             http_latency_delta: Family::default(),
             http_latency_total: Family::default(),
@@ -109,6 +118,12 @@ impl Metrics {
             "client_connections_established_count",
             "count of client connections established",
             this.client_connections_established_count.clone(),
+        );
+
+        this.registry.register(
+            "client_info",
+            "general information about the client",
+            this.client_info.clone(),
         );
 
         this.registry.register(
@@ -254,6 +269,8 @@ impl Metrics {
         self: Arc<Self>,
         canceller: tokio_util::sync::CancellationToken,
     ) -> Result<(), Box<dyn std::error::Error + Send>> {
+        let listen_address = self.config.listen_address().clone();
+
         let listener = match self.listen() {
             Ok(listener) => listener,
             Err(err) => {
@@ -284,7 +301,11 @@ impl Metrics {
             }
         };
 
-        info!(service = Self::name(), "Starting http service...");
+        info!(
+            service = Self::name(),
+            listen_address = %listen_address,
+            "Starting http service...",
+        );
 
         if let Err(err) = server.run().await {
             error!(service = Self::name(), error = ?err, "Failure while running http service")

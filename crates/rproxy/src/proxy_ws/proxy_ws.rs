@@ -125,6 +125,8 @@ where
         canceller: tokio_util::sync::CancellationToken,
         resetter: broadcast::Sender<()>,
     ) -> Result<(), Box<dyn std::error::Error + Send>> {
+        let listen_address = config.listen_address().clone();
+
         let listener = match Self::listen(&config) {
             Ok(listener) => listener,
             Err(err) => {
@@ -144,7 +146,12 @@ where
         let client_connections_count = shared.client_connections_count.clone();
         let worker_canceller = canceller.clone();
 
-        info!(proxy = P::name(), workers_count = workers_count, "Starting websocket-proxy...");
+        info!(
+            proxy = P::name(),
+            listen_address = %listen_address,
+            workers_count = workers_count,
+            "Starting websocket-proxy...",
+        );
 
         let server = HttpServer::new(move || {
             let this = web::Data::new(Self::new(shared.clone(), worker_canceller.clone()));

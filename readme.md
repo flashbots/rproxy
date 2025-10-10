@@ -42,8 +42,11 @@ L2 builder proxy that:
 Usage: rproxy [OPTIONS]
 
 Options:
-  -h, --help     Print help
-  -V, --version  Print version
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version
 
 authrpc:
       --authrpc-backend <url>
@@ -121,10 +124,10 @@ authrpc:
           [env: RPROXY_AUTHRPC_MIRRORING_STRATEGY=]
           [default: fan-out]
 
-      --authrpc-remove-backend-from-peers
-          remove authrpc backend from peers
+      --authrpc-remove-backend-from-mirroring-peers
+          remove authrpc backend from mirroring peers
 
-          [env: RPROXY_AUTHRPC_REMOVE_BACKEND_FROM_PEERS=]
+          [env: RPROXY_AUTHRPC_REMOVE_BACKEND_FROM_MIRRORING_PEERS=]
 
 circuit-breaker:
       --circuit-breaker-reset-continuously
@@ -300,10 +303,10 @@ rpc:
           [env: RPROXY_RPC_MIRRORING_STRATEGY=]
           [default: fan-out]
 
-      --rpc-remove-backend-from-peers
+      --rpc-remove-backend-from-mirroring-peers
           remove rpc backend from peers
 
-          [env: RPROXY_RPC_REMOVE_BACKEND_FROM_PEERS=]
+          [env: RPROXY_RPC_REMOVE_BACKEND_FROM_MIRRORING_PEERS=]
 
 tls:
       --tls-certificate <path>
@@ -327,6 +330,9 @@ tls:
 
 # HELP rproxy_client_connections_established_count count of client connections established.
 # TYPE rproxy_client_connections_established_count counter
+
+# HELP rproxy_client_info general information about the client.
+# TYPE rproxy_client_info counter
 
 # HELP rproxy_client_connections_closed_count count of client connections closed.
 # TYPE rproxy_client_connections_closed_count counter
@@ -373,11 +379,9 @@ tls:
 
 # HELP rproxy_tls_certificate_valid_not_before tls certificate's not-valid-before timestamp.
 # TYPE rproxy_tls_certificate_valid_not_before gauge
-rproxy_tls_certificate_valid_not_before 1761974266
 
 # HELP rproxy_tls_certificate_valid_not_after tls certificate's not-valid-after timestamp.
 # TYPE rproxy_tls_certificate_valid_not_after gauge
-rproxy_tls_certificate_valid_not_after 1761974266
 
 # HELP rproxy_ws_latency_backend_nanoseconds round-trip-time of websocket pings to backend divided by 2.
 # TYPE rproxy_ws_latency_backend_nanoseconds gauge
@@ -400,5 +404,4 @@ rproxy_tls_certificate_valid_not_after 1761974266
 
 # HELP rproxy_ws_proxy_failure_count count of failures to proxy websocket message.
 # TYPE rproxy_ws_proxy_failure_count counter
-# EOF
 ```
