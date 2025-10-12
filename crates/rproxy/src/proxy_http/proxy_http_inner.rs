@@ -17,8 +17,8 @@ where
 
     fn should_mirror(
         &self,
-        jrpc: &JrpcRequestMetaMaybeBatch,
-        req: &ProxiedHttpRequest,
-        res: &ProxiedHttpResponse,
+        jrpc_req: &JrpcRequestMetaMaybeBatch,
+        http_req: &ProxiedHttpRequest,
+        http_res: &ProxiedHttpResponse,
     ) -> bool;
 }

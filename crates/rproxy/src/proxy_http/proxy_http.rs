@@ -117,8 +117,8 @@ where
             worker_id: id.clone(),
             inner: inner.clone(),
             metrics: shared.metrics.clone(),
-            peers: peers.clone(),
-            peer_index: AtomicUsize::new(0),
+            mirroring_peers: peers.clone(),
+            mirroring_peer_round_robin_index: AtomicUsize::new(0),
         }
         .start();
 
@@ -387,10 +387,10 @@ where
         mut cli_req: ProxiedHttpRequest,
         mut bck_res: ProxiedHttpResponse,
         inner: Arc<P>,
-        metrics: Arc<Metrics>,
         worker_id: Uuid,
-        peers: Arc<Vec<actix::Addr<ProxyHttpBackendEndpoint<C, P>>>>,
-        mut peer_index: usize,
+        metrics: Arc<Metrics>,
+        mirroring_peers: Arc<Vec<actix::Addr<ProxyHttpBackendEndpoint<C, P>>>>,
+        mut mirroring_peer_round_robin_index: usize,
     ) {
         if cli_req.decompressed_size < cli_req.size {
             (cli_req.decompressed_body, cli_req.decompressed_size) =
@@ -405,22 +405,22 @@ where
         match serde_json::from_slice::<JrpcRequestMetaMaybeBatch>(&cli_req.decompressed_body) {
             Ok(jrpc) => {
                 if inner.should_mirror(&jrpc, &cli_req, &bck_res) {
-                    let count = match inner.config().mirroring_strategy() {
-                        ConfigProxyHttpMirroringStrategy::FanOut => peers.len(),
+                    let mirrors_count = match inner.config().mirroring_strategy() {
+                        ConfigProxyHttpMirroringStrategy::FanOut => mirroring_peers.len(),
                         ConfigProxyHttpMirroringStrategy::RoundRobin => 1,
                         ConfigProxyHttpMirroringStrategy::RoundRobinPairs => 2,
                     };
 
-                    for _ in 0..count {
-                        let peer = &peers[peer_index];
-                        let mut req = cli_req.clone();
-                        req.info.jrpc_method = jrpc.method();
-                        peer.do_send(req.clone());
-
-                        peer_index += 1;
-                        if peer_index >= peers.len() {
-                            peer_index = 0;
+                    for _ in 0..mirrors_count {
+                        let mirroring_peer = &mirroring_peers[mirroring_peer_round_robin_index];
+                        mirroring_peer_round_robin_index += 1;
+                        if mirroring_peer_round_robin_index >= mirroring_peers.len() {
+                            mirroring_peer_round_robin_index = 0;
                         }
+
+                        let mut req = cli_req.clone();
+                        req.info.jrpc_method_enriched = jrpc.method_enriched();
+                        mirroring_peer.do_send(req.clone());
                     }
                 }
 
@@ -465,17 +465,14 @@ where
                 decompress(mrr_res.body.clone(), mrr_res.size, mrr_res.info.content_encoding());
         }
 
-        let jrpc_method = cli_req.info().jrpc_method.clone();
-        Self::maybe_log_mirrored_request(
-            jrpc_method.clone(),
-            &cli_req,
-            &mrr_res,
-            worker_id,
-            inner.config(),
-        );
+        Self::maybe_log_mirrored_request(&cli_req, &mrr_res, worker_id, inner.config());
+
         metrics
             .http_mirror_success_count
-            .get_or_create(&LabelsProxyHttpJrpc { proxy: P::name(), jrpc_method })
+            .get_or_create(&LabelsProxyHttpJrpc {
+                proxy: P::name(),
+                jrpc_method: cli_req.info.jrpc_method_enriched,
+            })
             .inc();
     }
 
@@ -506,19 +503,12 @@ where
             Loggable(&serde_json::Value::Null)
         };
 
-        let jrpc_method = match jrpc {
-            JrpcRequestMetaMaybeBatch::Single(jrpc) => jrpc.method.clone().into_owned(),
-            JrpcRequestMetaMaybeBatch::Batch(batch) => {
-                batch.iter().map(|jrpc| jrpc.method.clone()).collect::<Vec<_>>().join("+")
-            }
-        };
-
         info!(
             proxy = P::name(),
             request_id = %req.info.id,
             connection_id = %req.info.connection_id,
             worker_id = %worker_id,
-            jrpc_method = jrpc_method,
+            jrpc_method = %jrpc.method_enriched(),
             http_status = res.status(),
             remote_addr = req.info().remote_addr,
             ts_request_received = req.start().format(&Iso8601::DEFAULT).unwrap_or_default(),
@@ -531,7 +521,6 @@ where
     }
 
     fn maybe_log_mirrored_request(
-        jrpc_method: Cow<'_, str>,
         req: &ProxiedHttpRequest,
         res: &ProxiedHttpResponse,
         worker_id: Uuid,
@@ -560,7 +549,7 @@ where
             request_id = %req.info.id,
             connection_id = %req.info.connection_id,
             worker_id = %worker_id,
-            jrpc_method = jrpc_method.as_ref(),
+            jrpc_method = %req.info.jrpc_method_enriched,
             http_status = res.status(),
             remote_addr = req.info().remote_addr,
             ts_request_received = req.start().format(&Iso8601::DEFAULT).unwrap_or_default(),
@@ -731,7 +720,7 @@ where
     ) {
         let metric_labels_jrpc = match jrpc {
             JrpcRequestMetaMaybeBatch::Single(jrpc) => {
-                LabelsProxyHttpJrpc { jrpc_method: jrpc.method.clone(), proxy: P::name() }
+                LabelsProxyHttpJrpc { jrpc_method: jrpc.method_enriched(), proxy: P::name() }
             }
 
             JrpcRequestMetaMaybeBatch::Batch(_) => {
@@ -768,8 +757,10 @@ where
 
             JrpcRequestMetaMaybeBatch::Batch(batch) => {
                 for jrpc in batch.iter() {
-                    let metric_labels_jrpc =
-                        LabelsProxyHttpJrpc { jrpc_method: jrpc.method.clone(), proxy: P::name() };
+                    let metric_labels_jrpc = LabelsProxyHttpJrpc {
+                        jrpc_method: jrpc.method_enriched(),
+                        proxy: P::name(),
+                    };
                     metrics.http_proxy_success_count.get_or_create(&metric_labels_jrpc).inc();
                 }
             }
@@ -866,9 +857,15 @@ where
 {
     inner: Arc<P>,
     worker_id: Uuid,
-    peers: Arc<Vec<actix::Addr<ProxyHttpBackendEndpoint<C, P>>>>,
-    peer_index: AtomicUsize,
     metrics: Arc<Metrics>,
+
+    /// mirroring_peers is the vector of endpoints for mirroring peers.
+    mirroring_peers: Arc<Vec<actix::Addr<ProxyHttpBackendEndpoint<C, P>>>>,
+
+    /// mirroring_peer_round_robin_index is used for round-robin mirroring
+    /// strategy.  it holds the index of the mirroring peers that will be
+    /// used for the next round of mirroring.
+    mirroring_peer_round_robin_index: AtomicUsize,
 }
 
 impl<C, P> actix::Actor for ProxyHttpPostprocessor<C, P>
@@ -894,23 +891,31 @@ where
         let inner = self.inner.clone();
         let metrics = self.metrics.clone();
         let worker_id = self.worker_id.clone();
-        let peers = self.peers.clone();
-        let mut peer_index = self.peer_index.load(Ordering::Relaxed);
+        let mirroring_peers = self.mirroring_peers.clone();
+        let mut mirroring_peer_round_robin_index =
+            self.mirroring_peer_round_robin_index.load(Ordering::Relaxed);
 
         ctx.spawn(
             async move {
                 ProxyHttp::<C, P>::finalise_proxying(
-                    msg.req, msg.res, inner, metrics, worker_id, peers, peer_index,
+                    msg.req,
+                    msg.res,
+                    inner,
+                    worker_id,
+                    metrics,
+                    mirroring_peers,
+                    mirroring_peer_round_robin_index,
                 );
             }
             .into_actor(self),
         );
 
-        peer_index += 1;
-        if peer_index >= self.peers.len() {
-            peer_index = 0;
+        mirroring_peer_round_robin_index += 1;
+        if mirroring_peer_round_robin_index >= self.mirroring_peers.len() {
+            mirroring_peer_round_robin_index = 0;
         }
-        self.peer_index.store(peer_index, Ordering::Relaxed);
+        self.mirroring_peer_round_robin_index
+            .store(mirroring_peer_round_robin_index, Ordering::Relaxed);
     }
 }
 
@@ -1047,6 +1052,7 @@ where
                             }
                         };
                     }
+
                     Err(err) => {
                         warn!(
                             proxy = P::name(),
@@ -1078,7 +1084,7 @@ pub(crate) struct ProxyHttpRequestInfo {
     path: String,
     path_and_query: String,
     headers: HeaderMap,
-    jrpc_method: Cow<'static, str>,
+    jrpc_method_enriched: Cow<'static, str>,
 }
 
 impl ProxyHttpRequestInfo {
@@ -1153,7 +1159,7 @@ impl ProxyHttpRequestInfo {
             path,
             path_and_query,
             headers,
-            jrpc_method: Cow::Borrowed(""),
+            jrpc_method_enriched: Cow::Borrowed(""),
         }
     }
 
@@ -1193,7 +1199,7 @@ impl ProxyHttpRequestInfo {
 pub(crate) struct ProxyHttpResponseInfo {
     id: Uuid,
     status: StatusCode,
-    headers: HeaderMap,
+    headers: HeaderMap, // TODO: perhaps we don't need all headers, just select ones
 }
 
 impl ProxyHttpResponseInfo {

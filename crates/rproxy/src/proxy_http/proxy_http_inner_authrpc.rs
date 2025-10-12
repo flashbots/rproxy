@@ -1,8 +1,6 @@
-use std::borrow::Cow;
-
 use crate::{
     config::ConfigAuthrpc,
-    jrpc::JrpcRequestMetaMaybeBatch,
+    jrpc::{JrpcRequestMeta, JrpcRequestMetaMaybeBatch},
     proxy::ProxyInner,
     proxy_http::{ProxiedHttpRequest, ProxiedHttpResponse, ProxyHttpInner},
 };
@@ -34,11 +32,13 @@ impl ProxyHttpInner<ConfigAuthrpc> for ProxyHttpInnerAuthrpc {
 
     fn should_mirror(
         &self,
-        jrpc: &JrpcRequestMetaMaybeBatch,
+        jrpc_req: &JrpcRequestMetaMaybeBatch,
         _: &ProxiedHttpRequest,
         _: &ProxiedHttpResponse,
     ) -> bool {
-        fn should_mirror(method: Cow<'static, str>) -> bool {
+        fn should_mirror(jrpc_req: &JrpcRequestMeta) -> bool {
+            let method = jrpc_req.method();
+
             if true &&
                 !method.starts_with("engine_forkchoiceUpdated") &&
                 !method.starts_with("engine_newPayload") &&
@@ -49,12 +49,12 @@ impl ProxyHttpInner<ConfigAuthrpc> for ProxyHttpInnerAuthrpc {
             return true;
         }
 
-        match jrpc {
-            JrpcRequestMetaMaybeBatch::Single(jrpc) => should_mirror(jrpc.method.clone()),
+        match jrpc_req {
+            JrpcRequestMetaMaybeBatch::Single(jrpc_req_single) => should_mirror(jrpc_req_single),
 
-            JrpcRequestMetaMaybeBatch::Batch(batch) => {
-                for jrpc in batch.iter() {
-                    if should_mirror(jrpc.method.clone()) {
+            JrpcRequestMetaMaybeBatch::Batch(jrpc_req_batch) => {
+                for jrpc_req_single in jrpc_req_batch.iter() {
+                    if should_mirror(jrpc_req_single) {
                         return true;
                     }
                 }

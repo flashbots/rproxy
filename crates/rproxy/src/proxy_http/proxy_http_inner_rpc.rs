@@ -1,10 +1,8 @@
-use std::borrow::Cow;
-
 use tracing::warn;
 
 use crate::{
     config::ConfigRpc,
-    jrpc::{JrpcRequestMetaMaybeBatch, JrpcResponseMeta},
+    jrpc::{JrpcError, JrpcRequestMeta, JrpcRequestMetaMaybeBatch, JrpcResponseMeta},
     proxy::ProxyInner,
     proxy_http::{ProxiedHttpRequest, ProxiedHttpResponse, ProxyHttpInner},
 };
@@ -36,65 +34,73 @@ impl ProxyHttpInner<ConfigRpc> for ProxyHttpInnerRpc {
 
     fn should_mirror(
         &self,
-        jrpc: &JrpcRequestMetaMaybeBatch,
+        jrpc_req: &JrpcRequestMetaMaybeBatch,
         _: &ProxiedHttpRequest,
-        res: &ProxiedHttpResponse,
+        http_res: &ProxiedHttpResponse,
     ) -> bool {
         fn should_mirror(
-            method: Cow<'static, str>,
-            res: &JrpcResponseMeta,
+            jrpc_req: &JrpcRequestMeta,
+            jrpc_res: &JrpcResponseMeta,
             mirror_errored_requests: bool,
         ) -> bool {
-            if !matches!(method.as_ref(), "eth_sendRawTransaction" | "eth_sendBundle") {
+            if !matches!(jrpc_req.method().as_ref(), "eth_sendRawTransaction" | "eth_sendBundle") {
                 return false;
             }
 
-            return mirror_errored_requests || res.error.is_none()
+            return mirror_errored_requests || jrpc_res.error.is_none()
         }
 
-        match jrpc {
-            JrpcRequestMetaMaybeBatch::Single(jrpc) => {
-                let res = match serde_json::from_slice::<JrpcResponseMeta>(&res.decompressed_body())
-                {
-                    Ok(jrpc_response) => jrpc_response,
-                    Err(err) => {
-                        warn!(proxy = Self::name(), error = ?err, "Failed to parse json-rpc response");
-                        return false;
-                    }
-                };
-
-                return should_mirror(
-                    jrpc.method.clone(),
-                    &res,
-                    self.config.mirror_errored_requests,
-                );
-            }
-
-            JrpcRequestMetaMaybeBatch::Batch(batch) => {
-                let res = match serde_json::from_slice::<Vec<JrpcResponseMeta>>(
-                    &res.decompressed_body(),
+        match jrpc_req {
+            JrpcRequestMetaMaybeBatch::Single(jrpc_req_single) => {
+                let jrpc_res_single = match serde_json::from_slice::<JrpcResponseMeta>(
+                    &http_res.decompressed_body(),
                 ) {
                     Ok(jrpc_response) => jrpc_response,
                     Err(err) => {
                         warn!(proxy = Self::name(), error = ?err, "Failed to parse json-rpc response");
-                        return false;
+
+                        return should_mirror(
+                            jrpc_req_single,
+                            &JrpcResponseMeta { error: Some(JrpcError {}) },
+                            self.config.mirror_errored_requests,
+                        );
                     }
                 };
 
-                if res.len() != batch.len() {
+                return should_mirror(
+                    jrpc_req_single,
+                    &jrpc_res_single,
+                    self.config.mirror_errored_requests,
+                );
+            }
+
+            JrpcRequestMetaMaybeBatch::Batch(jrpc_req_batch) => {
+                let mut jrpc_res_batch = match serde_json::from_slice::<Vec<JrpcResponseMeta>>(
+                    &http_res.decompressed_body(),
+                ) {
+                    Ok(jrpc_response) => jrpc_response,
+                    Err(err) => {
+                        warn!(proxy = Self::name(), error = ?err, "Failed to parse json-rpc response");
+                        vec![JrpcResponseMeta { error: Some(JrpcError {}) }; jrpc_req_batch.len()]
+                    }
+                };
+
+                if jrpc_res_batch.len() != jrpc_req_batch.len() {
                     warn!(
                         proxy = Self::name(),
                         "A response to jrpc-batch has mismatching count of objects (want: {}, got: {})",
-                        batch.len(),
-                        res.len(),
+                        jrpc_req_batch.len(),
+                        jrpc_res_batch.len(),
                     );
-                    return false;
+                    jrpc_res_batch =
+                        vec![JrpcResponseMeta { error: Some(JrpcError {}) }; jrpc_req_batch.len()];
                 }
 
-                for (idx, jrpc) in batch.iter().enumerate() {
+                for (idx, jrpc_req_single) in jrpc_req_batch.iter().enumerate() {
+                    let jrpc_res_single = &jrpc_res_batch[idx];
                     if should_mirror(
-                        jrpc.method.clone(),
-                        &res[idx],
+                        jrpc_req_single,
+                        jrpc_res_single,
                         self.config.mirror_errored_requests,
                     ) {
                         return true;
