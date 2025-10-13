@@ -45,7 +45,7 @@ impl ConfigLogging {
 
     pub(crate) fn setup_logging(&self) {
         match self.format {
-            ConfigLogFormat::JSON => {
+            ConfigLogFormat::Json => {
                 tracing_subscriber::registry()
                     .with(EnvFilter::from(self.level.clone()))
                     .with(fmt::layer().json().flatten_event(true))
@@ -66,7 +66,7 @@ impl ConfigLogging {
 
 #[derive(Clone, Debug, clap::ValueEnum)]
 pub(crate) enum ConfigLogFormat {
-    JSON,
+    Json,
     Text,
 }
 

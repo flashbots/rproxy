@@ -190,7 +190,7 @@ where
         let handler = proxy.handle();
         let mut resetter = resetter.subscribe();
         tokio::spawn(async move {
-            if let Ok(_) = resetter.recv().await {
+            if resetter.recv().await.is_ok() {
                 info!(proxy = P::name(), "Reset signal received, stopping websocket-proxy...");
                 handler.stop(true).await;
             }

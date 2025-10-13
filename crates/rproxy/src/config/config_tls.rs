@@ -155,16 +155,15 @@ impl ConfigTls {
 
         // certificate + key
         {
-            if let (Some(cert), Some(key)) = (cert, key) {
-                if let Err(err) =
+            if let (Some(cert), Some(key)) = (cert, key) &&
+                let Err(err) =
                     ServerConfig::builder().with_no_client_auth().with_single_cert(cert, key)
-                {
-                    errs.push(ConfigTlsError::InvalidPair {
-                        path_cert: self.certificate.clone(),
-                        path_key: self.key.clone(),
-                        err: err.to_string(),
-                    });
-                }
+            {
+                errs.push(ConfigTlsError::InvalidPair {
+                    path_cert: self.certificate.clone(),
+                    path_key: self.key.clone(),
+                    err: err.to_string(),
+                });
             }
         }
 

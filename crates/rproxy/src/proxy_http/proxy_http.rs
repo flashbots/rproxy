@@ -215,7 +215,7 @@ where
         let handler = server.handle();
         let mut resetter = resetter.subscribe();
         tokio::spawn(async move {
-            if let Ok(_) = resetter.recv().await {
+            if resetter.recv().await.is_ok() {
                 info!(proxy = P::name(), "Reset signal received, stopping http-proxy...");
                 handler.stop(true).await;
             }
@@ -353,7 +353,7 @@ where
         let id = req.info.id;
         let connection_id = req.info.connection_id;
 
-        if let Err(_) = self.requests.insert_sync(id, req) {
+        if self.requests.insert_sync(id, req).is_err() {
             error!(
                 proxy = P::name(),
                 request_id = %id,
@@ -580,13 +580,11 @@ where
                 None => return,
             };
 
-            let method = match match message.get_key_value("method") {
+            let method = (match message.get_key_value("method") {
                 Some((_, method)) => method.as_str(),
                 None => None,
-            } {
-                Some(method) => method,
-                None => "",
-            }
+            })
+            .unwrap_or_default()
             .to_owned();
 
             if !method.is_empty() {
@@ -1230,7 +1228,7 @@ where
 
     info: Option<ProxyHttpRequestInfo>,
     start: UtcDateTime,
-    body: Box<Vec<u8>>,
+    body: Vec<u8>,
 
     #[pin]
     stream: S,
@@ -1252,7 +1250,7 @@ where
             info: Some(info),
             stream: body,
             start: timestamp,
-            body: Box::new(Vec::new()), // TODO: preallocate reasonable size
+            body: Vec::new(), // TODO: preallocate reasonable size
         }
     }
 }
@@ -1326,7 +1324,7 @@ where
 
     info: Option<ProxyHttpResponseInfo>,
     start: UtcDateTime,
-    body: Box<Vec<u8>>,
+    body: Vec<u8>,
 
     #[pin]
     stream: S,
@@ -1349,7 +1347,7 @@ where
             proxy,
             stream: body,
             start: timestamp,
-            body: Box::new(Vec::new()), // TODO: preallocate reasonable size
+            body: Vec::new(), // TODO: preallocate reasonable size
             info: Some(ProxyHttpResponseInfo::new(id, status, headers)),
         }
     }
@@ -1429,14 +1427,14 @@ pub(crate) struct ProxiedHttpRequest {
 impl ProxiedHttpRequest {
     pub(crate) fn new(
         info: ProxyHttpRequestInfo,
-        body: Box<Vec<u8>>,
+        body: Vec<u8>,
         start: UtcDateTime,
         end: UtcDateTime,
     ) -> Self {
         let size = body.len();
         Self {
             info,
-            body: Bytes::from(*body),
+            body: Bytes::from(body),
             size,
             decompressed_body: Bytes::new(),
             decompressed_size: 0,
@@ -1478,14 +1476,14 @@ pub(crate) struct ProxiedHttpResponse {
 impl ProxiedHttpResponse {
     pub(crate) fn new(
         info: ProxyHttpResponseInfo,
-        body: Box<Vec<u8>>,
+        body: Vec<u8>,
         start: UtcDateTime,
         end: UtcDateTime,
     ) -> Self {
         let size = body.len();
         Self {
             info,
-            body: Bytes::from(*body),
+            body: Bytes::from(body),
             size,
             decompressed_body: Bytes::new(),
             decompressed_size: 0,
