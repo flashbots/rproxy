@@ -49,6 +49,6 @@ tracing-subscriber = { version = "0.3.20", features = ["env-filter", "json", "va
 tungstenite = { version = "0.27.0", features = ["handshake"] }
 url = "2.5.7"
 uuid = { version = "1.18.1", features = ["v7" ]}
-valuable = { version = "0.1.1", features = ["derive"] }
+valuable = { version = "0.1.0", features = ["derive"] }
 x509-parser = "0.18.0"
 zstd = "0.13.3"

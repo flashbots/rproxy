@@ -28,7 +28,7 @@ impl Server {
         let resetter = Server::wait_for_reset_signal(canceller.clone());
 
         // spawn metrics service
-        let metrics = Arc::new(Metrics::new(config.metrics.clone()));
+        let metrics = Arc::new(Metrics::new(config.metrics));
         {
             let canceller = canceller.clone();
             let metrics = metrics.clone();

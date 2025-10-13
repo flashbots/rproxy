@@ -22,7 +22,7 @@ use actix_web::{
     HttpServer,
     body::BodySize,
     http::{StatusCode, header},
-    middleware::{NormalizePath, TrailingSlash},
+    middleware::NormalizePath,
     web,
 };
 use awc::{
@@ -179,7 +179,7 @@ where
 
             App::new()
                 .app_data(this)
-                .wrap(NormalizePath::new(TrailingSlash::Trim))
+                .wrap(NormalizePath::trim())
                 .default_service(web::route().to(Self::receive))
         })
         .on_connect(Self::on_connect(metrics, client_connections_count))
@@ -250,10 +250,10 @@ where
             socket.set_tcp_keepalive(
                 &socket2::TcpKeepalive::new()
                     .with_time(
-                        config.idle_connection_timeout().div_f64(f64::from(TCP_KEEPALIVE_ATTEMPTS)),
+                        config.idle_connection_timeout().checked_div(TCP_KEEPALIVE_ATTEMPTS).expect("duration is not zero"),
                     )
                     .with_interval(
-                        config.idle_connection_timeout().div_f64(f64::from(TCP_KEEPALIVE_ATTEMPTS)),
+                        config.idle_connection_timeout().checked_div(TCP_KEEPALIVE_ATTEMPTS).expect("duration is not zero"),
                     )
                     .with_retries(TCP_KEEPALIVE_ATTEMPTS - 1),
             )?;
@@ -457,11 +457,13 @@ where
     ) {
         if cli_req.decompressed_size < cli_req.size {
             (cli_req.decompressed_body, cli_req.decompressed_size) =
+                // TODO: remove this clone
                 decompress(cli_req.body.clone(), cli_req.size, cli_req.info.content_encoding());
         }
 
         if mrr_res.decompressed_size < mrr_res.size {
             (mrr_res.decompressed_body, mrr_res.decompressed_size) =
+                // TODO: remove this clone
                 decompress(mrr_res.body.clone(), mrr_res.size, mrr_res.info.content_encoding());
         }
 

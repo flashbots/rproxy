@@ -5,7 +5,7 @@ use actix_web::{
     HttpRequest,
     HttpResponse,
     HttpServer,
-    middleware::{NormalizePath, TrailingSlash},
+    middleware::NormalizePath,
     web,
 };
 use awc::http::Method;
@@ -287,7 +287,7 @@ impl Metrics {
         let server = match HttpServer::new(move || {
             App::new()
                 .app_data(web::Data::new(self.clone()))
-                .wrap(NormalizePath::new(TrailingSlash::Trim))
+                .wrap(NormalizePath::trim())
                 .default_service(web::route().to(Self::receive))
         })
         .workers(1)
