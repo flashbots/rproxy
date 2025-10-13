@@ -6,3 +6,7 @@ default-members = ["crates/rproxy"]
 members = [
     "crates/rproxy",
 ]
+
+[profile.flamegraph]
+inherits = "release"
+debug = true
