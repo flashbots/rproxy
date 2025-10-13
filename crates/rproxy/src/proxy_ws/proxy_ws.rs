@@ -10,14 +10,7 @@ use std::{
 };
 
 use actix::{Actor, AsyncContext, WrapFuture};
-use actix_web::{
-    App,
-    HttpRequest,
-    HttpResponse,
-    HttpServer,
-    middleware::NormalizePath,
-    web,
-};
+use actix_web::{App, HttpRequest, HttpResponse, HttpServer, middleware::NormalizePath, web};
 use actix_ws::{MessageStream, Session};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use futures::{

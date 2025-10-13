@@ -250,10 +250,16 @@ where
             socket.set_tcp_keepalive(
                 &socket2::TcpKeepalive::new()
                     .with_time(
-                        config.idle_connection_timeout().checked_div(TCP_KEEPALIVE_ATTEMPTS).expect("duration is not zero"),
+                        config
+                            .idle_connection_timeout()
+                            .checked_div(TCP_KEEPALIVE_ATTEMPTS)
+                            .expect("duration is not zero"),
                     )
                     .with_interval(
-                        config.idle_connection_timeout().checked_div(TCP_KEEPALIVE_ATTEMPTS).expect("duration is not zero"),
+                        config
+                            .idle_connection_timeout()
+                            .checked_div(TCP_KEEPALIVE_ATTEMPTS)
+                            .expect("duration is not zero"),
                     )
                     .with_retries(TCP_KEEPALIVE_ATTEMPTS - 1),
             )?;

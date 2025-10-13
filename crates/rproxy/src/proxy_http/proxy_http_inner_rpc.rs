@@ -47,7 +47,7 @@ impl ProxyHttpInner<ConfigRpc> for ProxyHttpInnerRpc {
                 return false;
             }
 
-            return mirror_errored_requests || jrpc_res.error.is_none()
+            return mirror_errored_requests || jrpc_res.error.is_none();
         }
 
         match jrpc_req {

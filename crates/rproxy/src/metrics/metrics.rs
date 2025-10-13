@@ -1,13 +1,6 @@
 use std::{net::TcpListener, sync::Arc, time::Duration};
 
-use actix_web::{
-    App,
-    HttpRequest,
-    HttpResponse,
-    HttpServer,
-    middleware::NormalizePath,
-    web,
-};
+use actix_web::{App, HttpRequest, HttpResponse, HttpServer, middleware::NormalizePath, web};
 use awc::http::Method;
 use prometheus_client::{
     metrics::{counter::Counter, family::Family, gauge::Gauge},
