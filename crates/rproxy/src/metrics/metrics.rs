@@ -1,13 +1,6 @@
 use std::{net::TcpListener, sync::Arc, time::Duration};
 
-use actix_web::{
-    App,
-    HttpRequest,
-    HttpResponse,
-    HttpServer,
-    middleware::{NormalizePath, TrailingSlash},
-    web,
-};
+use actix_web::{App, HttpRequest, HttpResponse, HttpServer, middleware::NormalizePath, web};
 use awc::http::Method;
 use prometheus_client::{
     metrics::{counter::Counter, family::Family, gauge::Gauge},
@@ -287,7 +280,7 @@ impl Metrics {
         let server = match HttpServer::new(move || {
             App::new()
                 .app_data(web::Data::new(self.clone()))
-                .wrap(NormalizePath::new(TrailingSlash::Trim))
+                .wrap(NormalizePath::trim())
                 .default_service(web::route().to(Self::receive))
         })
         .workers(1)

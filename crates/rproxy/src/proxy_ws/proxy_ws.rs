@@ -10,14 +10,7 @@ use std::{
 };
 
 use actix::{Actor, AsyncContext, WrapFuture};
-use actix_web::{
-    App,
-    HttpRequest,
-    HttpResponse,
-    HttpServer,
-    middleware::{NormalizePath, TrailingSlash},
-    web,
-};
+use actix_web::{App, HttpRequest, HttpResponse, HttpServer, middleware::NormalizePath, web};
 use actix_ws::{MessageStream, Session};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use futures::{
@@ -158,7 +151,7 @@ where
 
             App::new()
                 .app_data(this)
-                .wrap(NormalizePath::new(TrailingSlash::Trim))
+                .wrap(NormalizePath::trim())
                 .default_service(web::route().to(Self::receive))
         })
         .on_connect(Self::on_connect(metrics, client_connections_count))
