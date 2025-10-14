@@ -8,6 +8,10 @@ build:
 fmt:
 	@cargo +nightly fmt --check
 
+.PHONY: lint
+lint:
+	@cargo +nightly clippy --all-features -- -D warnings
+
 .PHONY: help
 help:
 	@cargo run -- --help
