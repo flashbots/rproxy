@@ -46,13 +46,13 @@ use crate::{
 
 const WS_PING_INTERVAL_SECONDS: u64 = 1;
 
-const WS_CLI_ERROR: &'static str = "client error";
-const WS_BCK_ERROR: &'static str = "backend error";
-const WS_BCK_TIMEOUT: &'static str = "backend error";
-const WS_CLOSE_OK: &'static str = "";
+const WS_CLI_ERROR: &str = "client error";
+const WS_BCK_ERROR: &str = "backend error";
+const WS_BCK_TIMEOUT: &str = "backend error";
+const WS_CLOSE_OK: &str = "";
 
-const WS_LABEL_BACKEND: &'static str = "backend";
-const WS_LABEL_CLIENT: &'static str = "client";
+const WS_LABEL_BACKEND: &str = "backend";
+const WS_LABEL_CLIENT: &str = "client";
 
 // ProxyWs -------------------------------------------------------------
 
@@ -90,7 +90,7 @@ where
 
         let config = shared.config();
 
-        let backend = ProxyWsBackendEndpoint::new(id.clone(), config.backend_url());
+        let backend = ProxyWsBackendEndpoint::new(id, config.backend_url());
 
         let postprocessor = ProxyWsPostprocessor::<C, P> {
             inner: shared.inner.clone(),
@@ -125,7 +125,7 @@ where
         canceller: tokio_util::sync::CancellationToken,
         resetter: broadcast::Sender<()>,
     ) -> Result<(), Box<dyn std::error::Error + Send>> {
-        let listen_address = config.listen_address().clone();
+        let listen_address = config.listen_address();
 
         let listener = match Self::listen(&config) {
             Ok(listener) => listener,
@@ -582,7 +582,7 @@ where
                             start: timestamp,
                             end: UtcDateTime::now(),
                         });
-                        return Ok(());
+                        Ok(())
                     }
 
                     // text
@@ -619,7 +619,7 @@ where
                             start: timestamp,
                             end: UtcDateTime::now(),
                         });
-                        return Ok(());
+                        Ok(())
                     }
 
                     // ping
@@ -634,31 +634,28 @@ where
                             );
                             return Err(WS_CLI_ERROR);
                         }
-                        return Ok(());
+                        Ok(())
                     }
 
                     // pong
                     actix_ws::Message::Pong(bytes) => {
-                        if let Some(pong) = ProxyWsPing::from_bytes(bytes) {
-                            if let Some((_, ping)) = this.pings.remove_sync(&pong.id) {
-                                if pong == ping {
-                                    this.ping_balance_cli.dec();
-                                    this.shared
-                                        .metrics
-                                        .ws_latency_client
-                                        .get_or_create(&LabelsProxyWs {
-                                            proxy: P::name(),
-                                            destination: WS_LABEL_BACKEND,
-                                        })
-                                        .record(
-                                            (1000000.0 *
-                                                (timestamp - pong.timestamp).as_seconds_f64() /
-                                                2.0)
-                                                as i64,
-                                        );
-                                    return Ok(());
-                                }
-                            }
+                        if let Some(pong) = ProxyWsPing::from_bytes(bytes) &&
+                            let Some((_, ping)) = this.pings.remove_sync(&pong.id) &&
+                            pong == ping
+                        {
+                            this.ping_balance_cli.dec();
+                            this.shared
+                                .metrics
+                                .ws_latency_client
+                                .get_or_create(&LabelsProxyWs {
+                                    proxy: P::name(),
+                                    destination: WS_LABEL_BACKEND,
+                                })
+                                .record(
+                                    (1000000.0 * (timestamp - pong.timestamp).as_seconds_f64() /
+                                        2.0) as i64,
+                                );
+                            return Ok(());
                         }
                         warn!(
                             proxy = P::name(),
@@ -666,7 +663,7 @@ where
                             worker_id = %this.id,
                             "Unexpected websocket pong received from client",
                         );
-                        return Ok(());
+                        Ok(())
                     }
 
                     // close
@@ -691,12 +688,10 @@ where
                             );
                             return Err(WS_BCK_ERROR);
                         }
-                        return Err(WS_CLOSE_OK);
+                        Err(WS_CLOSE_OK)
                     }
 
-                    _ => {
-                        return Ok(());
-                    }
+                    _ => Ok(()),
                 }
             }
 
@@ -708,7 +703,7 @@ where
                     error = ?err,
                     "Client websocket stream error"
                 );
-                return Err(WS_CLI_ERROR);
+                Err(WS_CLI_ERROR)
             }
 
             None => {
@@ -718,7 +713,7 @@ where
                     worker_id = %this.id,
                     "Client had closed websocket stream"
                 );
-                return Err(WS_CLOSE_OK);
+                Err(WS_CLOSE_OK)
             }
         }
     }
@@ -760,7 +755,7 @@ where
                             start: timestamp,
                             end: UtcDateTime::now(),
                         });
-                        return Ok(());
+                        Ok(())
                     }
 
                     // text
@@ -789,7 +784,7 @@ where
                             start: timestamp,
                             end: UtcDateTime::now(),
                         });
-                        return Ok(());
+                        Ok(())
                     }
 
                     // ping
@@ -804,31 +799,28 @@ where
                             );
                             return Err(WS_BCK_ERROR);
                         }
-                        return Ok(());
+                        Ok(())
                     }
 
                     // pong
                     tungstenite::Message::Pong(bytes) => {
-                        if let Some(pong) = ProxyWsPing::from_bytes(bytes) {
-                            if let Some((_, ping)) = this.pings.remove_sync(&pong.id) {
-                                if pong == ping {
-                                    this.ping_balance_bck.dec();
-                                    this.shared
-                                        .metrics
-                                        .ws_latency_backend
-                                        .get_or_create(&LabelsProxyWs {
-                                            proxy: P::name(),
-                                            destination: WS_LABEL_BACKEND,
-                                        })
-                                        .record(
-                                            (1000000.0 *
-                                                (timestamp - pong.timestamp).as_seconds_f64() /
-                                                2.0)
-                                                as i64,
-                                        );
-                                    return Ok(());
-                                }
-                            }
+                        if let Some(pong) = ProxyWsPing::from_bytes(bytes) &&
+                            let Some((_, ping)) = this.pings.remove_sync(&pong.id) &&
+                            pong == ping
+                        {
+                            this.ping_balance_bck.dec();
+                            this.shared
+                                .metrics
+                                .ws_latency_backend
+                                .get_or_create(&LabelsProxyWs {
+                                    proxy: P::name(),
+                                    destination: WS_LABEL_BACKEND,
+                                })
+                                .record(
+                                    (1000000.0 * (timestamp - pong.timestamp).as_seconds_f64() /
+                                        2.0) as i64,
+                                );
+                            return Ok(());
                         }
                         warn!(
                             proxy = P::name(),
@@ -836,7 +828,7 @@ where
                             worker_id = %this.id,
                             "Unexpected websocket pong received from backend",
                         );
-                        return Ok(());
+                        Ok(())
                     }
 
                     // close
@@ -858,12 +850,10 @@ where
                             );
                             return Err(WS_CLI_ERROR);
                         }
-                        return Err(WS_CLOSE_OK);
+                        Err(WS_CLOSE_OK)
                     }
 
-                    _ => {
-                        return Ok(());
-                    }
+                    _ => Ok(()),
                 }
             }
 
@@ -875,7 +865,7 @@ where
                     error = ?err,
                     "Backend websocket stream error"
                 );
-                return Err(WS_BCK_ERROR);
+                Err(WS_BCK_ERROR)
             }
 
             None => {
@@ -885,7 +875,7 @@ where
                     worker_id = %this.id,
                     "Backend had closed websocket stream"
                 );
-                return Err(WS_CLOSE_OK);
+                Err(WS_CLOSE_OK)
             }
         }
     }
@@ -909,7 +899,7 @@ where
                 let json_msg = if config.log_backend_messages() {
                     Loggable(&Self::maybe_sanitise(
                         config.log_sanitise(),
-                        serde_json::from_slice(&msg).unwrap_or_default(),
+                        serde_json::from_slice(msg).unwrap_or_default(),
                     ))
                 } else {
                     Loggable(&serde_json::Value::Null)
@@ -931,7 +921,7 @@ where
                 let json_msg = if config.log_backend_messages() {
                     Loggable(&Self::maybe_sanitise(
                         config.log_sanitise(),
-                        serde_json::from_str(&msg).unwrap_or_default(),
+                        serde_json::from_str(msg).unwrap_or_default(),
                     ))
                 } else {
                     Loggable(&serde_json::Value::Null)
@@ -953,7 +943,7 @@ where
                 let json_msg = if config.log_client_messages() {
                     Loggable(&Self::maybe_sanitise(
                         config.log_sanitise(),
-                        serde_json::from_slice(&msg).unwrap_or_default(),
+                        serde_json::from_slice(msg).unwrap_or_default(),
                     ))
                 } else {
                     Loggable(&serde_json::Value::Null)
@@ -975,7 +965,7 @@ where
                 let json_msg = if config.log_client_messages() {
                     Loggable(&Self::maybe_sanitise(
                         config.log_sanitise(),
-                        serde_json::from_str(&msg).unwrap_or_default(),
+                        serde_json::from_str(msg).unwrap_or_default(),
                     ))
                 } else {
                     Loggable(&serde_json::Value::Null)
@@ -1000,15 +990,13 @@ where
             return message;
         }
 
-        if let Some(object) = message.as_object_mut() {
-            if let Some(diff) = object.get_mut("diff") {
-                if let Some(transactions) = diff.get_mut("transactions") {
-                    if let Some(transactions) = transactions.as_array_mut() {
-                        for transaction in transactions {
-                            raw_transaction_to_hash(transaction);
-                        }
-                    }
-                }
+        if let Some(object) = message.as_object_mut() &&
+            let Some(diff) = object.get_mut("diff") &&
+            let Some(transactions) = diff.get_mut("transactions") &&
+            let Some(transactions) = transactions.as_array_mut()
+        {
+            for transaction in transactions {
+                raw_transaction_to_hash(transaction);
             }
         }
 
@@ -1193,7 +1181,7 @@ where
     fn handle(&mut self, msg: ProxyWsMessage, ctx: &mut Self::Context) -> Self::Result {
         let inner = self.inner.clone();
         let metrics = self.metrics.clone();
-        let worker_id = self.worker_id.clone();
+        let worker_id = self.worker_id;
 
         ctx.spawn(
             async move {

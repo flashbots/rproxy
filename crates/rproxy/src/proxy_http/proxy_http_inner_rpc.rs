@@ -47,7 +47,7 @@ impl ProxyHttpInner<ConfigRpc> for ProxyHttpInnerRpc {
                 return false;
             }
 
-            return mirror_errored_requests || jrpc_res.error.is_none()
+            mirror_errored_requests || jrpc_res.error.is_none()
         }
 
         match jrpc_req {
@@ -67,11 +67,11 @@ impl ProxyHttpInner<ConfigRpc> for ProxyHttpInnerRpc {
                     }
                 };
 
-                return should_mirror(
+                should_mirror(
                     jrpc_req_single,
                     &jrpc_res_single,
                     self.config.mirror_errored_requests,
-                );
+                )
             }
 
             JrpcRequestMetaMaybeBatch::Batch(jrpc_req_batch) => {
@@ -106,7 +106,7 @@ impl ProxyHttpInner<ConfigRpc> for ProxyHttpInnerRpc {
                         return true;
                     }
                 }
-                return false;
+                false
             }
         }
     }

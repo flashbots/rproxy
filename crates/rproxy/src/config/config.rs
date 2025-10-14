@@ -76,10 +76,10 @@ impl Config {
         let mut errs: Vec<ConfigError> = vec![];
 
         // authrpc proxy
-        if self.rpc.enabled {
-            if let Some(_errs) = self.authrpc.validate() {
-                errs.append(&mut _errs.into_iter().map(|err| err.into()).collect());
-            }
+        if self.rpc.enabled &&
+            let Some(_errs) = self.authrpc.validate()
+        {
+            errs.append(&mut _errs.into_iter().map(|err| err.into()).collect());
         }
 
         // circuit-breaker
@@ -88,10 +88,10 @@ impl Config {
         }
 
         // flashblocks proxy
-        if self.flashblocks.enabled {
-            if let Some(_errs) = self.flashblocks.validate() {
-                errs.append(&mut _errs.into_iter().map(|err| err.into()).collect());
-            }
+        if self.flashblocks.enabled &&
+            let Some(_errs) = self.flashblocks.validate()
+        {
+            errs.append(&mut _errs.into_iter().map(|err| err.into()).collect());
         }
 
         // logging
@@ -105,17 +105,17 @@ impl Config {
         }
 
         // rpc proxy
-        if self.rpc.enabled {
-            if let Some(_errs) = self.rpc.validate() {
-                errs.append(&mut _errs.into_iter().map(|err| err.into()).collect());
-            }
+        if self.rpc.enabled &&
+            let Some(_errs) = self.rpc.validate()
+        {
+            errs.append(&mut _errs.into_iter().map(|err| err.into()).collect());
         }
 
         // tls
-        if self.tls.certificate != "" || self.tls.key != "" {
-            if let Some(_errs) = self.tls.validate() {
-                errs.append(&mut _errs.into_iter().map(|err| err.into()).collect());
-            }
+        if (!self.tls.certificate.is_empty() || !self.tls.key.is_empty()) &&
+            let Some(_errs) = self.tls.validate()
+        {
+            errs.append(&mut _errs.into_iter().map(|err| err.into()).collect());
         }
 
         if !self.authrpc.enabled && !self.flashblocks.enabled && !self.rpc.enabled {

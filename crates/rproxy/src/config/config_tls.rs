@@ -53,11 +53,11 @@ impl ConfigTls {
 
         // certificate
         {
-            if self.certificate == "" && self.key != "" {
+            if self.certificate.is_empty() && !self.key.is_empty() {
                 errs.push(ConfigTlsError::MissingCertificate);
             }
 
-            if self.certificate != "" {
+            if !self.certificate.is_empty() {
                 match File::open(self.certificate.clone()) {
                     Err(err) => {
                         errs.push(ConfigTlsError::InvalidCertificateFile {
@@ -104,11 +104,11 @@ impl ConfigTls {
 
         // key
         {
-            if self.certificate != "" && self.key == "" {
+            if !self.certificate.is_empty() && self.key.is_empty() {
                 errs.push(ConfigTlsError::MissingKey);
             }
 
-            if self.key != "" {
+            if !self.key.is_empty() {
                 match File::open(self.key.clone()) {
                     Err(err) => {
                         errs.push(ConfigTlsError::InvalidKeyFile {
@@ -155,20 +155,16 @@ impl ConfigTls {
 
         // certificate + key
         {
-            match (cert, key) {
-                (Some(cert), Some(key)) => {
-                    if let Err(err) =
-                        ServerConfig::builder().with_no_client_auth().with_single_cert(cert, key)
-                    {
-                        errs.push(ConfigTlsError::InvalidPair {
-                            path_cert: self.certificate.clone(),
-                            path_key: self.key.clone(),
-                            err: err.to_string(),
-                        });
-                    }
+            if let (Some(cert), Some(key)) = (cert, key) {
+                if let Err(err) =
+                    ServerConfig::builder().with_no_client_auth().with_single_cert(cert, key)
+                {
+                    errs.push(ConfigTlsError::InvalidPair {
+                        path_cert: self.certificate.clone(),
+                        path_key: self.key.clone(),
+                        err: err.to_string(),
+                    });
                 }
-
-                (_, _) => {}
             }
         }
 
@@ -179,7 +175,7 @@ impl ConfigTls {
     }
 
     pub(crate) fn enabled(&self) -> bool {
-        self.certificate != "" && self.key != ""
+        !self.certificate.is_empty() && !self.key.is_empty()
     }
 
     pub(crate) fn key(&self) -> &PrivateKeyDer<'static> {

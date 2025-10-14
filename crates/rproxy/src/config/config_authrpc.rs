@@ -169,7 +169,7 @@ impl ConfigAuthrpc {
         // backend_url
         match Url::parse(&self.backend_url) {
             Ok(url) => {
-                if let None = url.host() {
+                if url.host().is_none() {
                     errs.push(ConfigAuthrpcError::BackendUrlMissesHost {
                         url: self.backend_url.clone(),
                     });
@@ -194,9 +194,9 @@ impl ConfigAuthrpc {
 
         // mirroring_peer_urls
         for peer_url in self.mirroring_peer_urls.iter() {
-            match Url::parse(&peer_url) {
+            match Url::parse(peer_url) {
                 Ok(url) => {
-                    if let None = url.host() {
+                    if url.host().is_none() {
                         errs.push(ConfigAuthrpcError::PeerUrlMissesHost { url: peer_url.clone() });
                     }
                 }
@@ -235,7 +235,7 @@ impl ConfigAuthrpc {
             let local_ips = get_all_local_ip_addresses();
 
             self.mirroring_peer_urls.retain(|url| {
-                let peer_url = Url::parse(&url).expect(ALREADY_VALIDATED);
+                let peer_url = Url::parse(url).expect(ALREADY_VALIDATED);
                 let peer_host = peer_url.host_str().expect(ALREADY_VALIDATED);
 
                 if !peer_url.port().eq(&backend_url.port()) {

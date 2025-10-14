@@ -53,7 +53,7 @@ impl valuable::Listable for Loggable<'_> {
         if let serde_json::Value::Array(arr) = &self.0 {
             return (arr.len(), Some(arr.len()));
         }
-        return (0, Some(0));
+        (0, Some(0))
     }
 }
 
@@ -62,6 +62,6 @@ impl valuable::Mappable for Loggable<'_> {
         if let serde_json::Value::Object(obj) = &self.0 {
             return (obj.len(), Some(obj.len()));
         }
-        return (0, Some(0));
+        (0, Some(0))
     }
 }

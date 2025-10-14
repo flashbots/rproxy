@@ -122,7 +122,7 @@ impl Drop for ProxyConnectionGuard {
     fn drop(&mut self) {
         let val = self.client_connections_count.fetch_sub(1, Ordering::Relaxed) - 1;
 
-        let metric_labels = LabelsProxy { proxy: &self.proxy_name };
+        let metric_labels = LabelsProxy { proxy: self.proxy_name };
 
         self.metrics.client_connections_active_count.get_or_create(&metric_labels).set(val);
         self.metrics.client_connections_closed_count.get_or_create(&metric_labels).inc();

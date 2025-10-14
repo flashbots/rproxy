@@ -269,7 +269,7 @@ impl Metrics {
         self: Arc<Self>,
         canceller: tokio_util::sync::CancellationToken,
     ) -> Result<(), Box<dyn std::error::Error + Send>> {
-        let listen_address = self.config.listen_address().clone();
+        let listen_address = self.config.listen_address();
 
         let listener = match self.listen() {
             Ok(listener) => listener,

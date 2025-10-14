@@ -46,7 +46,7 @@ impl Server {
         }
 
         // spawn circuit-breaker
-        if config.circuit_breaker.url != "" {
+        if !config.circuit_breaker.url.is_empty() {
             let canceller = canceller.clone();
             let resetter = resetter.clone();
 
@@ -86,7 +86,7 @@ impl Server {
                 let resetter = resetter.clone();
 
                 services.push(tokio::spawn(async move {
-                    let res = ProxyHttp::<ConfigAuthrpc, ProxyHttpInnerAuthrpc>::run(
+                    ProxyHttp::<ConfigAuthrpc, ProxyHttpInnerAuthrpc>::run(
                         config,
                         tls,
                         metrics,
@@ -101,8 +101,7 @@ impl Server {
                             "Failed to start http-proxy, terminating...",
                         );
                         canceller.cancel();
-                    });
-                    res
+                    })
                 }));
             }
 
@@ -115,7 +114,7 @@ impl Server {
                 let resetter = resetter.clone();
 
                 services.push(tokio::spawn(async move {
-                    let res = ProxyHttp::<ConfigRpc, ProxyHttpInnerRpc>::run(
+                    ProxyHttp::<ConfigRpc, ProxyHttpInnerRpc>::run(
                         config,
                         tls,
                         metrics,
@@ -130,8 +129,7 @@ impl Server {
                             "Failed to start http-proxy, terminating...",
                         );
                         canceller.cancel();
-                    });
-                    res
+                    })
                 }));
             }
 
@@ -144,7 +142,7 @@ impl Server {
                 let resetter = resetter.clone();
 
                 services.push(tokio::spawn(async move {
-                    let res = ProxyWs::<ConfigFlashblocks, ProxyWsInnerFlashblocks>::run(
+                    ProxyWs::<ConfigFlashblocks, ProxyWsInnerFlashblocks>::run(
                         config,
                         tls,
                         metrics,
@@ -159,8 +157,7 @@ impl Server {
                             "Failed to start websocket-proxy, terminating...",
                         );
                         canceller.cancel();
-                    });
-                    res
+                    })
                 }));
             }
 

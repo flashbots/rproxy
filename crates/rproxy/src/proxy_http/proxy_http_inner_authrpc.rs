@@ -46,7 +46,7 @@ impl ProxyHttpInner<ConfigAuthrpc> for ProxyHttpInnerAuthrpc {
             {
                 return false;
             }
-            return true;
+            true
         }
 
         match jrpc_req {
@@ -58,7 +58,7 @@ impl ProxyHttpInner<ConfigAuthrpc> for ProxyHttpInnerAuthrpc {
                         return true;
                     }
                 }
-                return false;
+                false
             }
         }
     }
