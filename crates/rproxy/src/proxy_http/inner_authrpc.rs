@@ -39,14 +39,13 @@ impl ProxyHttpInner<ConfigAuthrpc> for ProxyHttpInnerAuthrpc {
         fn should_mirror(jrpc_req: &JrpcRequestMeta) -> bool {
             let method = jrpc_req.method();
 
-            if true &&
-                !method.starts_with("engine_forkchoiceUpdated") &&
+            if !method.starts_with("engine_forkchoiceUpdated") &&
                 !method.starts_with("engine_newPayload") &&
                 !method.starts_with("miner_setMaxDASize")
             {
                 return false;
             }
-            return true;
+            true
         }
 
         match jrpc_req {
@@ -58,7 +57,7 @@ impl ProxyHttpInner<ConfigAuthrpc> for ProxyHttpInnerAuthrpc {
                         return true;
                     }
                 }
-                return false;
+                false
             }
         }
     }

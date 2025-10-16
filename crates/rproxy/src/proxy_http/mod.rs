@@ -1,16 +1,11 @@
-mod proxy_http_inner_authrpc;
-pub(crate) use proxy_http_inner_authrpc::ProxyHttpInnerAuthrpc;
+mod inner_authrpc;
+pub(crate) use inner_authrpc::ProxyHttpInnerAuthrpc;
 
-mod proxy_http_inner_rpc;
-pub(crate) use proxy_http_inner_rpc::ProxyHttpInnerRpc;
+mod inner_rpc;
+pub(crate) use inner_rpc::ProxyHttpInnerRpc;
 
-mod proxy_http;
-pub(crate) use proxy_http::{
-    ProxiedHttpRequest,
-    ProxiedHttpResponse,
-    ProxyHttp,
-    ProxyHttpRequestInfo,
-};
+mod http;
+pub(crate) use http::{ProxiedHttpRequest, ProxiedHttpResponse, ProxyHttp, ProxyHttpRequestInfo};
 
-mod proxy_http_inner;
-pub(crate) use proxy_http_inner::ProxyHttpInner;
+mod inner;
+pub(crate) use inner::ProxyHttpInner;

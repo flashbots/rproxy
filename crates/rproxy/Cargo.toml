@@ -8,6 +8,9 @@ default-run = "rproxy"
 name = "rproxy"
 path = "src/bin/main.rs"
 
+[lints]
+workspace = true
+
 [dependencies]
 actix = "0.13.5"
 actix-http = { version = "3.11.1", features = ["ws"] }

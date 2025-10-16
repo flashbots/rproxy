@@ -9,147 +9,133 @@ use tracing::warn;
 use url::Url;
 
 use crate::{
-    config::{
-        ALREADY_VALIDATED,
-        ConfigProxyHttp,
-        ConfigProxyHttpMirroringStrategy,
-        PARALLELISM_STRING,
-    },
+    config::{ALREADY_VALIDATED, ConfigProxyHttp, ConfigProxyHttpMirroringStrategy},
     utils::get_all_local_ip_addresses,
 };
 
-// ConfigRpc -----------------------------------------------------------
+// ConfigAuthrpc -------------------------------------------------------
 
 #[derive(Args, Clone, Debug)]
-pub(crate) struct ConfigRpc {
-    /// url of rpc backend
+pub(crate) struct ConfigAuthrpc {
+    /// url of authrpc backend
     #[arg(
-        default_value = "http://127.0.0.1:18645",
-        env = "RPROXY_RPC_BACKEND",
-        help_heading = "rpc",
-        long("rpc-backend"),
-        name("rpc_backend"),
+        default_value = "http://127.0.0.1:18651",
+        env = "RPROXY_AUTHRPC_BACKEND",
+        help_heading = "authrpc",
+        long("authrpc-backend"),
+        name("authrpc_backend"),
         value_name = "url"
     )]
     pub(crate) backend_url: String,
 
-    /// max concurrent requests per backend
+    /// max concurrent requests per authrpc backend
     #[arg(
-        default_value = PARALLELISM_STRING.as_str(),
-        env = "RPROXY_RPC_BACKEND_MAX_CONCURRENT_REQUESTS",
-        help_heading = "rpc",
-        long("rpc-backend-max-concurrent-requests"),
-        name("rpc_backend_max_concurrent_requests"),
+        default_value = "1",
+        env = "RPROXY_AUTHRPC_BACKEND_MAX_CONCURRENT_REQUESTS",
+        help_heading = "authrpc",
+        long("authrpc-backend-max-concurrent-requests"),
+        name("authrpc_backend_max_concurrent_requests"),
         value_name = "count"
     )]
     pub(crate) backend_max_concurrent_requests: usize,
 
-    /// max duration for backend requests
+    /// max duration for authrpc backend requests
     #[arg(
         default_value = "30s",
-        env = "RPROXY_RPC_BACKEND_TIMEOUT",
-        help_heading = "rpc",
-        long("rpc-backend-timeout"),
-        name("rpc_backend_timeout"),
+        env = "RPROXY_AUTHRPC_BACKEND_TIMEOUT",
+        help_heading = "authrpc",
+        long("authrpc-backend-timeout"),
+        name("authrpc_backend_timeout"),
         value_name = "duration",
         value_parser = humantime::parse_duration
     )]
     pub(crate) backend_timeout: Duration,
 
-    /// enable rpc proxy
+    /// enable authrpc proxy
     #[arg(
-        env = "RPROXY_RPC_ENABLED",
-        help_heading = "rpc",
-        long("rpc-enabled"),
-        name("rpc_enabled")
+        env = "RPROXY_AUTHRPC_ENABLED",
+        help_heading = "authrpc",
+        long("authrpc-enabled"),
+        name("authrpc_enabled")
     )]
     pub(crate) enabled: bool,
 
-    /// duration to keep idle rpc connections open (0 means no keep-alive)
+    /// duration to keep idle authrpc connections open (0 means no
+    /// keep-alive)
     #[arg(
         default_value = "30s",
-        env = "RPROXY_RPC_IDLE_CONNECTION_TIMEOUT",
-        help_heading = "rpc",
-        long("rpc-idle-connection-timeout"),
-        name("rpc_idle_connection_timeout"),
+        env = "RPROXY_AUTHRPC_IDLE_CONNECTION_TIMEOUT",
+        help_heading = "authrpc",
+        long("authrpc-idle-connection-timeout"),
+        name("authrpc_idle_connection_timeout"),
         value_name = "duration",
         value_parser = humantime::parse_duration
     )]
     pub(crate) idle_connection_timeout: Duration,
 
-    /// host:port for rpc proxy
+    /// host:port for authrpc proxy
     #[arg(
-        default_value = "0.0.0.0:8645",
-        env = "RPROXY_RPC_LISTEN_ADDRESS",
-        help_heading = "rpc",
-        long("rpc-listen-address"),
-        name("rpc_listen_address"),
+        default_value = "0.0.0.0:8651",
+        env = "RPROXY_AUTHRPC_LISTEN_ADDRESS",
+        help_heading = "authrpc",
+        long("authrpc-listen-address"),
+        name("authrpc_listen_address"),
         value_name = "socket"
     )]
     pub(crate) listen_address: String,
 
-    /// whether to log proxied rpc requests
+    /// whether to log proxied authrpc requests
     #[arg(
-        env = "RPROXY_RPC_LOG_MIRRORED_REQUESTS",
-        help_heading = "rpc",
-        long("rpc-log-mirrored-requests"),
-        name("rpc_log_mirrored_requests")
+        env = "RPROXY_AUTHRPC_LOG_MIRRORED_REQUESTS",
+        help_heading = "authrpc",
+        long("authrpc-log-mirrored-requests"),
+        name("authrpc_log_mirrored_requests")
     )]
     pub(crate) log_mirrored_requests: bool,
 
-    /// whether to log responses to proxied rpc requests
+    /// whether to log responses to proxied authrpc requests
     #[arg(
-        env = "RPROXY_RPC_LOG_MIRRORED_RESPONSES",
-        help_heading = "rpc",
-        long("rpc-log-mirrored-responses"),
-        name("rpc_log_mirrored_responses")
+        env = "RPROXY_AUTHRPC_LOG_MIRRORED_RESPONSES",
+        help_heading = "authrpc",
+        long("authrpc-log-mirrored-responses"),
+        name("authrpc_log_mirrored_responses")
     )]
     pub(crate) log_mirrored_responses: bool,
 
-    /// whether to log proxied rpc requests
+    /// whether to log proxied authrpc requests
     #[arg(
-        env = "RPROXY_RPC_LOG_PROXIED_REQUESTS",
-        help_heading = "rpc",
-        long("rpc-log-proxied-requests"),
-        name("rpc_log_proxied_requests")
+        env = "RPROXY_AUTHRPC_LOG_PROXIED_REQUESTS",
+        help_heading = "authrpc",
+        long("authrpc-log-proxied-requests"),
+        name("authrpc_log_proxied_requests")
     )]
     pub(crate) log_proxied_requests: bool,
 
-    /// whether to log responses to proxied rpc requests
+    /// whether to log responses to proxied authrpc requests
     #[arg(
-        env = "RPROXY_RPC_LOG_PROXIED_RESPONSES",
-        help_heading = "rpc",
-        long("rpc-log-proxied-responses"),
-        name("rpc_log_proxied_responses")
+        env = "RPROXY_AUTHRPC_LOG_PROXIED_RESPONSES",
+        help_heading = "authrpc",
+        long("authrpc-log-proxied-responses"),
+        name("authrpc_log_proxied_responses")
     )]
     pub(crate) log_proxied_responses: bool,
 
-    /// sanitise logs of proxied rpc requests/responses (e.g. don't log raw
-    /// transactions)
+    /// sanitise logs of proxied authrpc requests/responses (e.g. don't log
+    /// raw transactions)
     #[arg(
-        help_heading = "rpc",
-        env = "RPROXY_RPC_LOG_SANITISE",
-        long("rpc-log-sanitise"),
-        name("rpc-log_sanitise")
+        help_heading = "authrpc",
+        env = "RPROXY_AUTHRPC_LOG_SANITISE",
+        long("authrpc-log-sanitise"),
+        name("authrpc_log_sanitise")
     )]
     pub(crate) log_sanitise: bool,
 
-    /// whether the requests that returned an error from rpc backend should
-    /// be mirrored to peers
+    /// list of authrpc peers urls to mirror the requests to
     #[arg(
-        help_heading = "rpc",
-        env = "RPROXY_RPC_MIRROR_ERRORED_REQUESTS",
-        long("rpc-mirror-errored-requests"),
-        name("rpc_mirror_errored_requests")
-    )]
-    pub(crate) mirror_errored_requests: bool,
-
-    /// list of rpc peers urls to mirror the requests to
-    #[arg(
-        env="RPROXY_RPC_MIRRORING_PEERS",
-        help_heading = "rpc",
-        long("rpc-mirroring-peer"),
-        name("rpc_mirroring_peer"),
+        env="RPROXY_AUTHRPC_MIRRORING_PEERS",
+        help_heading = "authrpc",
+        long("authrpc-mirroring-peer"),
+        name("authrpc_mirroring_peer"),
         num_args = 1..,
         value_name="url"
     )]
@@ -157,47 +143,50 @@ pub(crate) struct ConfigRpc {
 
     #[arg(
         default_value = "fan-out",
-        env = "RPROXY_RPC_MIRRORING_STRATEGY",
-        help_heading = "rpc",
-        long("rpc-mirroring-strategy"),
-        name("rpc_mirroring_strategy"),
+        env = "RPROXY_AUTHRPC_MIRRORING_STRATEGY",
+        help_heading = "authrpc",
+        long("authrpc-mirroring-strategy"),
+        name("authrpc_mirroring_strategy"),
         value_name = "strategy"
     )]
     #[clap(value_enum)]
     pub(crate) mirroring_strategy: ConfigProxyHttpMirroringStrategy,
 
-    /// remove rpc backend from peers
+    /// remove authrpc backend from mirroring peers
     #[arg(
-        env = "RPROXY_RPC_REMOVE_BACKEND_FROM_MIRRORING_PEERS",
-        help_heading = "rpc",
-        long("rpc-remove-backend-from-mirroring-peers"),
-        name("rpc_remove_backend_from_mirroring_peers")
+        env = "RPROXY_AUTHRPC_REMOVE_BACKEND_FROM_MIRRORING_PEERS",
+        help_heading = "authrpc",
+        long("authrpc-remove-backend-from-mirroring-peers"),
+        name("authrpc_remove_backend_from_mirroring_peers")
     )]
     pub(crate) remove_backend_from_mirroring_peers: bool,
 }
 
-impl ConfigRpc {
-    pub(crate) fn validate(&self) -> Option<Vec<ConfigRpcError>> {
-        let mut errs: Vec<ConfigRpcError> = vec![];
+impl ConfigAuthrpc {
+    pub(crate) fn validate(&self) -> Option<Vec<ConfigAuthrpcError>> {
+        let mut errs: Vec<ConfigAuthrpcError> = vec![];
 
         // backend_url
         match Url::parse(&self.backend_url) {
             Ok(url) => {
-                if let None = url.host() {
-                    errs.push(ConfigRpcError::BackendUrlMissesHost {
+                if url.host().is_none() {
+                    errs.push(ConfigAuthrpcError::BackendUrlMissesHost {
                         url: self.backend_url.clone(),
                     });
                 }
             }
 
             Err(err) => {
-                errs.push(ConfigRpcError::BackendUrlInvalid { url: self.backend_url.clone(), err });
+                errs.push(ConfigAuthrpcError::BackendUrlInvalid {
+                    url: self.backend_url.clone(),
+                    err,
+                });
             }
         }
 
         // listen_address
         let _ = self.listen_address.parse::<SocketAddr>().map_err(|err| {
-            errs.push(ConfigRpcError::ListenAddressInvalid {
+            errs.push(ConfigAuthrpcError::ListenAddressInvalid {
                 addr: self.listen_address.clone(),
                 err,
             })
@@ -205,15 +194,15 @@ impl ConfigRpc {
 
         // mirroring_peer_urls
         for peer_url in self.mirroring_peer_urls.iter() {
-            match Url::parse(&peer_url) {
+            match Url::parse(peer_url) {
                 Ok(url) => {
-                    if let None = url.host() {
-                        errs.push(ConfigRpcError::PeerUrlMissesHost { url: peer_url.clone() });
+                    if url.host().is_none() {
+                        errs.push(ConfigAuthrpcError::PeerUrlMissesHost { url: peer_url.clone() });
                     }
                 }
 
                 Err(err) => {
-                    errs.push(ConfigRpcError::PeerUrlInvalid { url: peer_url.clone(), err });
+                    errs.push(ConfigAuthrpcError::PeerUrlInvalid { url: peer_url.clone(), err });
                 }
             }
         }
@@ -233,7 +222,7 @@ impl ConfigRpc {
             let backend_url = Url::parse(&self.backend_url.clone()).expect(ALREADY_VALIDATED);
             let backend_host = backend_url.host_str().expect(ALREADY_VALIDATED);
 
-            let backend_ips: Vec<IpAddr> = match format!("{}:0", backend_host).to_socket_addrs() {
+            let backend_ips: Vec<IpAddr> = match format!("{backend_host}:0").to_socket_addrs() {
                 Ok(res) => res,
                 Err(err) => {
                     warn!(host = backend_host, error = ?err, "Failed to resolve backend host");
@@ -246,7 +235,7 @@ impl ConfigRpc {
             let local_ips = get_all_local_ip_addresses();
 
             self.mirroring_peer_urls.retain(|url| {
-                let peer_url = Url::parse(&url).expect(ALREADY_VALIDATED);
+                let peer_url = Url::parse(url).expect(ALREADY_VALIDATED);
                 let peer_host = peer_url.host_str().expect(ALREADY_VALIDATED);
 
                 if !peer_url.port().eq(&backend_url.port()) {
@@ -259,7 +248,7 @@ impl ConfigRpc {
                     return false;
                 }
 
-                let peer_ips: Vec<IpAddr> = match format!("{}:0", peer_host).to_socket_addrs() {
+                let peer_ips: Vec<IpAddr> = match format!("{peer_host}:0").to_socket_addrs() {
                     Ok(res) => res,
                     Err(err) => {
                         warn!(host = peer_host, error = ?err, "Failed to resolve peer host");
@@ -288,7 +277,7 @@ impl ConfigRpc {
     }
 }
 
-impl ConfigProxyHttp for ConfigRpc {
+impl ConfigProxyHttp for ConfigAuthrpc {
     #[inline]
     fn backend_max_concurrent_requests(&self) -> usize {
         self.backend_max_concurrent_requests
@@ -353,22 +342,22 @@ impl ConfigProxyHttp for ConfigRpc {
     }
 }
 
-// ConfigRpcError ------------------------------------------------------
+// ConfigAuthrpcError --------------------------------------------------
 
 #[derive(Debug, Clone, Error)]
-pub(crate) enum ConfigRpcError {
-    #[error("invalid rpc backend url '{url}': {err}")]
+pub(crate) enum ConfigAuthrpcError {
+    #[error("invalid authrpc backend url '{url}': {err}")]
     BackendUrlInvalid { url: String, err: url::ParseError },
 
-    #[error("invalid rpc backend url '{url}': host is missing")]
+    #[error("invalid authrpc backend url '{url}': host is missing")]
     BackendUrlMissesHost { url: String },
 
-    #[error("invalid rpc proxy listen address '{addr}': {err}")]
+    #[error("invalid authrpc proxy listen address '{addr}': {err}")]
     ListenAddressInvalid { addr: String, err: std::net::AddrParseError },
 
-    #[error("invalid rpc peer url '{url}': {err}")]
+    #[error("invalid authrpc peer url '{url}': {err}")]
     PeerUrlInvalid { url: String, err: url::ParseError },
 
-    #[error("invalid rpc peer url '{url}': host is missing")]
+    #[error("invalid authrpc peer url '{url}': host is missing")]
     PeerUrlMissesHost { url: String },
 }

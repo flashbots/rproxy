@@ -98,13 +98,13 @@ impl ConfigFlashblocks {
         // backend_url
         match self.backend_url.parse::<Uri>() {
             Ok(uri) => {
-                if let None = uri.authority() {
+                if uri.authority().is_none() {
                     errs.push(ConfigFlashblocksError::BackendUrlMissesHost {
                         url: self.backend_url.clone(),
                     });
                 }
 
-                if let None = uri.host() {
+                if uri.host().is_none() {
                     errs.push(ConfigFlashblocksError::BackendUrlMissesHost {
                         url: self.backend_url.clone(),
                     });

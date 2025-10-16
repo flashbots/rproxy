@@ -90,10 +90,10 @@ impl ConfigCircuitBreaker {
         }
 
         // url
-        if self.url != "" {
+        if !self.url.is_empty() {
             match Url::parse(&self.url) {
                 Ok(url) => {
-                    if let None = url.host() {
+                    if url.host().is_none() {
                         errs.push(ConfigCircuitBreakerError::UrlMissesHost {
                             url: self.url.clone(),
                         });

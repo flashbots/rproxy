@@ -88,7 +88,7 @@ where
 
         let backend = ProxyHttpBackendEndpoint::new(
             inner.clone(),
-            id.clone(),
+            id,
             shared.metrics.clone(),
             config.backend_url(),
             connections_limit,
@@ -102,7 +102,7 @@ where
                 .map(|peer_url| {
                     ProxyHttpBackendEndpoint::new(
                         shared.inner(),
-                        id.clone(),
+                        id,
                         shared.metrics.clone(),
                         peer_url.to_owned(),
                         config.backend_max_concurrent_requests(),
@@ -114,7 +114,7 @@ where
         );
 
         let postprocessor = ProxyHttpPostprocessor::<C, P> {
-            worker_id: id.clone(),
+            worker_id: id,
             inner: inner.clone(),
             metrics: shared.metrics.clone(),
             mirroring_peers: peers.clone(),
@@ -132,7 +132,7 @@ where
         canceller: tokio_util::sync::CancellationToken,
         resetter: broadcast::Sender<()>,
     ) -> Result<(), Box<dyn std::error::Error + Send>> {
-        let listen_address = config.listen_address().clone();
+        let listen_address = config.listen_address();
 
         let listener = match Self::listen(&config) {
             Ok(listener) => listener,
@@ -215,7 +215,7 @@ where
         let handler = server.handle();
         let mut resetter = resetter.subscribe();
         tokio::spawn(async move {
-            if let Ok(_) = resetter.recv().await {
+            if resetter.recv().await.is_ok() {
                 info!(proxy = P::name(), "Reset signal received, stopping http-proxy...");
                 handler.stop(true).await;
             }
@@ -306,8 +306,8 @@ where
 
         let info = ProxyHttpRequestInfo::new(&cli_req, cli_req.conn_data::<ProxyConnectionGuard>());
 
-        let id = info.id.clone();
-        let connection_id = info.connection_id.clone();
+        let id = info.id;
+        let connection_id = info.connection_id;
 
         let bck_req = this.backend.new_backend_request(&info);
         let bck_req_body = ProxyHttpRequestBody::new(this.clone(), info, cli_req_body, timestamp);
@@ -329,7 +329,7 @@ where
                     .http_proxy_failure_count
                     .get_or_create(&LabelsProxy { proxy: P::name() })
                     .inc();
-                return Ok(HttpResponse::BadGateway().body(format!("Backend error: {:?}", err)));
+                return Ok(HttpResponse::BadGateway().body(format!("Backend error: {err:?}")));
             }
         };
 
@@ -350,10 +350,10 @@ where
     }
 
     fn postprocess_client_request(&self, req: ProxiedHttpRequest) {
-        let id = req.info.id.clone();
-        let connection_id = req.info.connection_id.clone();
+        let id = req.info.id;
+        let connection_id = req.info.connection_id;
 
-        if let Err(_) = self.requests.insert_sync(id, req) {
+        if self.requests.insert_sync(id, req).is_err() {
             error!(
                 proxy = P::name(),
                 request_id = %id,
@@ -365,17 +365,14 @@ where
     }
 
     fn postprocess_backend_response(&self, bck_res: ProxiedHttpResponse) {
-        let cli_req = match self.requests.remove_sync(&bck_res.info.id) {
-            Some((_, req)) => req,
-            None => {
-                error!(
-                    proxy = P::name(),
-                    request_id = %bck_res.info.id,
-                    worker_id = %self.id,
-                    "Proxied http response for unmatching request",
-                );
-                return;
-            }
+        let Some((_, cli_req)) = self.requests.remove_sync(&bck_res.info.id) else {
+            error!(
+                proxy = P::name(),
+                request_id = %bck_res.info.id,
+                worker_id = %self.id,
+                "Proxied http response for unmatching request",
+            );
+            return;
         };
 
         // hand over to postprocessor asynchronously so that we can return the
@@ -575,31 +572,26 @@ where
                 return;
             }
 
-            let message = match message.as_object_mut() {
-                Some(message) => message,
-                None => return,
+            let Some(message) = message.as_object_mut() else {
+                return;
             };
 
-            let method = match match message.get_key_value("method") {
+            let method = (match message.get_key_value("method") {
                 Some((_, method)) => method.as_str(),
                 None => None,
-            } {
-                Some(method) => method,
-                None => "",
-            }
-            .to_owned();
+            })
+            .unwrap_or_default()
+            .to_string();
 
-            if method != "" {
+            if !method.is_empty() {
                 // single-shot request
 
-                let params = match match message.get_mut("params") {
+                let Some(params) = match message.get_mut("params") {
                     Some(params) => params,
                     None => return,
                 }
-                .as_array_mut()
-                {
-                    Some(params) => params,
-                    None => return,
+                .as_array_mut() else {
+                    return;
                 };
 
                 match method.as_str() {
@@ -608,19 +600,16 @@ where
                             return;
                         }
 
-                        let execution_payload = match params[1].as_object_mut() {
-                            Some(execution_payload) => execution_payload,
-                            None => return,
+                        let Some(execution_payload) = params[1].as_object_mut() else {
+                            return;
                         };
 
-                        let transactions = match match execution_payload.get_mut("transactions") {
+                        let Some(transactions) = match execution_payload.get_mut("transactions") {
                             Some(transactions) => transactions,
                             None => return,
                         }
-                        .as_array_mut()
-                        {
-                            Some(transactions) => transactions,
-                            None => return,
+                        .as_array_mut() else {
+                            return;
                         };
 
                         for transaction in transactions {
@@ -629,23 +618,20 @@ where
                     }
 
                     "engine_newPayloadV4" => {
-                        if params.len() < 1 {
+                        if params.is_empty() {
                             return;
                         }
 
-                        let execution_payload = match params[0].as_object_mut() {
-                            Some(execution_payload) => execution_payload,
-                            None => return,
+                        let Some(execution_payload) = params[0].as_object_mut() else {
+                            return;
                         };
 
-                        let transactions = match match execution_payload.get_mut("transactions") {
+                        let Some(transactions) = match execution_payload.get_mut("transactions") {
                             Some(transactions) => transactions,
                             None => return,
                         }
-                        .as_array_mut()
-                        {
-                            Some(transactions) => transactions,
-                            None => return,
+                        .as_array_mut() else {
+                            return;
                         };
 
                         for transaction in transactions {
@@ -654,23 +640,20 @@ where
                     }
 
                     "eth_sendBundle" => {
-                        if params.len() < 1 {
+                        if params.is_empty() {
                             return;
                         }
 
-                        let execution_payload = match params[0].as_object_mut() {
-                            Some(execution_payload) => execution_payload,
-                            None => return,
+                        let Some(execution_payload) = params[0].as_object_mut() else {
+                            return;
                         };
 
-                        let transactions = match match execution_payload.get_mut("txs") {
+                        let Some(transactions) = match execution_payload.get_mut("txs") {
                             Some(transactions) => transactions,
                             None => return,
                         }
-                        .as_array_mut()
-                        {
-                            Some(transactions) => transactions,
-                            None => return,
+                        .as_array_mut() else {
+                            return;
                         };
 
                         for transaction in transactions {
@@ -690,23 +673,21 @@ where
                 }
             }
 
-            let result = match match message.get_mut("result") {
+            let Some(result) = (match message.get_mut("result") {
                 Some(result) => result.as_object_mut(),
                 None => return,
-            } {
-                Some(result) => result,
-                None => return,
+            }) else {
+                return;
             };
 
-            if let Some(execution_payload) = result.get_mut("executionPayload") {
-                if let Some(transactions) = execution_payload.get_mut("transactions") {
-                    if let Some(transactions) = transactions.as_array_mut() {
-                        // engine_getPayloadV4
+            if let Some(execution_payload) = result.get_mut("executionPayload") &&
+                let Some(transactions) = execution_payload.get_mut("transactions") &&
+                let Some(transactions) = transactions.as_array_mut()
+            {
+                // engine_getPayloadV4
 
-                        for transaction in transactions {
-                            raw_transaction_to_hash(transaction);
-                        }
-                    }
+                for transaction in transactions {
+                    raw_transaction_to_hash(transaction);
                 }
             }
         }
@@ -890,7 +871,7 @@ where
     fn handle(&mut self, msg: ProxiedHttpCombo, ctx: &mut Self::Context) -> Self::Result {
         let inner = self.inner.clone();
         let metrics = self.metrics.clone();
-        let worker_id = self.worker_id.clone();
+        let worker_id = self.worker_id;
         let mirroring_peers = self.mirroring_peers.clone();
         let mut mirroring_peer_round_robin_index =
             self.mirroring_peer_round_robin_index.load(Ordering::Relaxed);
@@ -1000,7 +981,7 @@ where
         let start = UtcDateTime::now();
 
         let inner = self.inner.clone();
-        let worker_id = self.worker_id.clone();
+        let worker_id = self.worker_id;
         let metrics = self.metrics.clone();
 
         let mrr_req = self.new_backend_request(&cli_req.info);
@@ -1016,8 +997,7 @@ where
                             Ok(mrr_res_body) => {
                                 let size = match mrr_res_body.size() {
                                     BodySize::Sized(size) => size, // Body is always sized
-                                    BodySize::None => 0,
-                                    BodySize::Stream => 0,
+                                    BodySize::None | BodySize::Stream => 0,
                                 };
                                 let info = ProxyHttpResponseInfo::new(
                                     cli_req.info.id,
@@ -1100,11 +1080,11 @@ impl ProxyHttpRequestInfo {
         // append remote ip to x-forwarded-for
         if let Some(peer_addr) = req.connection_info().peer_addr() {
             let mut forwarded_for = String::new();
-            if let Some(ff) = req.headers().get(header::X_FORWARDED_FOR) {
-                if let Ok(ff) = ff.to_str() {
-                    forwarded_for.push_str(ff);
-                    forwarded_for.push_str(", ");
-                }
+            if let Some(ff) = req.headers().get(header::X_FORWARDED_FOR) &&
+                let Ok(ff) = ff.to_str()
+            {
+                forwarded_for.push_str(ff);
+                forwarded_for.push_str(", ");
             }
             forwarded_for.push_str(peer_addr);
             if let Ok(forwarded_for) = HeaderValue::from_str(&forwarded_for) {
@@ -1113,21 +1093,19 @@ impl ProxyHttpRequestInfo {
         }
 
         // set x-forwarded-proto if it's not already set
-        if req.connection_info().scheme() != "" {
-            if None == req.headers().get(header::X_FORWARDED_PROTO) {
-                if let Ok(forwarded_proto) = HeaderValue::from_str(req.connection_info().scheme()) {
-                    headers.insert(header::X_FORWARDED_PROTO, forwarded_proto);
-                }
-            }
+        if req.connection_info().scheme() != "" &&
+            req.headers().get(header::X_FORWARDED_PROTO).is_none() &&
+            let Ok(forwarded_proto) = HeaderValue::from_str(req.connection_info().scheme())
+        {
+            headers.insert(header::X_FORWARDED_PROTO, forwarded_proto);
         }
 
         // set x-forwarded-host if it's not already set
-        if req.connection_info().scheme() != "" {
-            if None == req.headers().get(header::X_FORWARDED_HOST) {
-                if let Ok(forwarded_host) = HeaderValue::from_str(req.connection_info().scheme()) {
-                    headers.insert(header::X_FORWARDED_HOST, forwarded_host);
-                }
-            }
+        if req.connection_info().scheme() != "" &&
+            req.headers().get(header::X_FORWARDED_HOST).is_none() &&
+            let Ok(forwarded_host) = HeaderValue::from_str(req.connection_info().scheme())
+        {
+            headers.insert(header::X_FORWARDED_HOST, forwarded_host);
         }
 
         // remote address from the guard has port, and connection info has ip
@@ -1148,7 +1126,7 @@ impl ProxyHttpRequestInfo {
 
         let path_and_query = match req.query_string() {
             "" => path.clone(),
-            val => format!("{}?{}", path, val),
+            val => format!("{path}?{val}"),
         };
 
         Self {
@@ -1165,12 +1143,12 @@ impl ProxyHttpRequestInfo {
 
     #[inline]
     pub(crate) fn id(&self) -> Uuid {
-        self.id.clone()
+        self.id
     }
 
     #[inline]
     pub(crate) fn connection_id(&self) -> Uuid {
-        self.connection_id.clone()
+        self.connection_id
     }
 
     #[inline]
@@ -1183,12 +1161,12 @@ impl ProxyHttpRequestInfo {
     }
 
     #[inline]
-    pub fn path_and_query(&self) -> &str {
+    pub(crate) fn path_and_query(&self) -> &str {
         &self.path_and_query
     }
 
     #[inline]
-    pub fn remote_addr(&self) -> &Option<String> {
+    pub(crate) fn remote_addr(&self) -> &Option<String> {
         &self.remote_addr
     }
 }
@@ -1209,7 +1187,7 @@ impl ProxyHttpResponseInfo {
 
     #[inline]
     pub(crate) fn id(&self) -> Uuid {
-        self.id.clone()
+        self.id
     }
 
     fn content_encoding(&self) -> String {
@@ -1233,7 +1211,7 @@ where
 
     info: Option<ProxyHttpRequestInfo>,
     start: UtcDateTime,
-    body: Box<Vec<u8>>,
+    body: Vec<u8>,
 
     #[pin]
     stream: S,
@@ -1255,7 +1233,7 @@ where
             info: Some(info),
             stream: body,
             start: timestamp,
-            body: Box::new(Vec::new()), // TODO: preallocate reasonable size
+            body: Vec::new(), // TODO: preallocate reasonable size
         }
     }
 }
@@ -1306,12 +1284,7 @@ where
                 if let Some(info) = mem::take(this.info) {
                     let proxy = this.proxy.clone();
 
-                    let req = ProxiedHttpRequest::new(
-                        info,
-                        mem::take(this.body),
-                        this.start.clone(),
-                        end,
-                    );
+                    let req = ProxiedHttpRequest::new(info, mem::take(this.body), *this.start, end);
 
                     proxy.postprocess_client_request(req);
                 }
@@ -1334,7 +1307,7 @@ where
 
     info: Option<ProxyHttpResponseInfo>,
     start: UtcDateTime,
-    body: Box<Vec<u8>>,
+    body: Vec<u8>,
 
     #[pin]
     stream: S,
@@ -1357,7 +1330,7 @@ where
             proxy,
             stream: body,
             start: timestamp,
-            body: Box::new(Vec::new()), // TODO: preallocate reasonable size
+            body: Vec::new(), // TODO: preallocate reasonable size
             info: Some(ProxyHttpResponseInfo::new(id, status, headers)),
         }
     }
@@ -1408,12 +1381,8 @@ where
                 if let Some(info) = mem::take(this.info) {
                     let proxy = this.proxy.clone();
 
-                    let res = ProxiedHttpResponse::new(
-                        info,
-                        mem::take(this.body),
-                        this.start.clone(),
-                        end,
-                    );
+                    let res =
+                        ProxiedHttpResponse::new(info, mem::take(this.body), *this.start, end);
 
                     proxy.postprocess_backend_response(res);
                 }
@@ -1441,14 +1410,14 @@ pub(crate) struct ProxiedHttpRequest {
 impl ProxiedHttpRequest {
     pub(crate) fn new(
         info: ProxyHttpRequestInfo,
-        body: Box<Vec<u8>>,
+        body: Vec<u8>,
         start: UtcDateTime,
         end: UtcDateTime,
     ) -> Self {
         let size = body.len();
         Self {
             info,
-            body: Bytes::from(*body),
+            body: Bytes::from(body),
             size,
             decompressed_body: Bytes::new(),
             decompressed_size: 0,
@@ -1490,14 +1459,14 @@ pub(crate) struct ProxiedHttpResponse {
 impl ProxiedHttpResponse {
     pub(crate) fn new(
         info: ProxyHttpResponseInfo,
-        body: Box<Vec<u8>>,
+        body: Vec<u8>,
         start: UtcDateTime,
         end: UtcDateTime,
     ) -> Self {
         let size = body.len();
         Self {
             info,
-            body: Bytes::from(*body),
+            body: Bytes::from(body),
             size,
             decompressed_body: Bytes::new(),
             decompressed_size: 0,

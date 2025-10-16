@@ -28,11 +28,10 @@ impl valuable::Valuable for Loggable<'_> {
 
     fn visit(&self, visitor: &mut dyn valuable::Visit) {
         match &self.0 {
-            serde_json::Value::Null => visitor.visit_value(self.as_value()),
-            serde_json::Value::Bool(_) => visitor.visit_value(self.as_value()),
-            serde_json::Value::String(_) => visitor.visit_value(self.as_value()),
+            serde_json::Value::Null |
+            serde_json::Value::Bool(_) |
+            serde_json::Value::String(_) |
             serde_json::Value::Number(_) => visitor.visit_value(self.as_value()),
-
             serde_json::Value::Array(list) => {
                 for val in list {
                     visitor.visit_value(Self(val).as_value());
@@ -53,7 +52,7 @@ impl valuable::Listable for Loggable<'_> {
         if let serde_json::Value::Array(arr) = &self.0 {
             return (arr.len(), Some(arr.len()));
         }
-        return (0, Some(0));
+        (0, Some(0))
     }
 }
 
@@ -62,6 +61,6 @@ impl valuable::Mappable for Loggable<'_> {
         if let serde_json::Value::Object(obj) = &self.0 {
             return (obj.len(), Some(obj.len()));
         }
-        return (0, Some(0));
+        (0, Some(0))
     }
 }

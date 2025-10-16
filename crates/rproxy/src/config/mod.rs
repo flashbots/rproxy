@@ -1,30 +1,232 @@
-mod config_authrpc;
-pub(crate) use config_authrpc::*;
+mod authrpc;
+pub(crate) use authrpc::*;
 
-mod config_circuit_breaker;
-pub(crate) use config_circuit_breaker::*;
+mod circuit_breaker;
+pub(crate) use circuit_breaker::*;
 
-mod config_flashblocks;
-pub(crate) use config_flashblocks::*;
+mod flashblocks;
+pub(crate) use flashblocks::*;
 
-mod config_logging;
-pub(crate) use config_logging::*;
+mod logging;
+pub(crate) use logging::*;
 
-mod config_metrics;
-pub(crate) use config_metrics::*;
+mod metrics;
+pub(crate) use metrics::*;
 
-mod config_proxy_http;
-pub(crate) use config_proxy_http::*;
+mod proxy_http;
+pub(crate) use proxy_http::*;
 
-mod config_proxy_ws;
-pub(crate) use config_proxy_ws::*;
+mod proxy_ws;
+pub(crate) use proxy_ws::*;
 
-mod config_rpc;
-pub(crate) use config_rpc::*;
+mod rpc;
+pub(crate) use rpc::*;
 
-mod config_tls;
-pub(crate) use config_tls::*;
+mod tls;
+use std::{process, sync::LazyLock};
 
-mod config;
-pub use config::Config;
-pub(crate) use config::*;
+use clap::Parser;
+use thiserror::Error;
+pub(crate) use tls::*;
+
+pub(crate) use crate::config::{
+    ConfigAuthrpc,
+    ConfigAuthrpcError,
+    ConfigCircuitBreaker,
+    ConfigCircuitBreakerError,
+    ConfigFlashblocks,
+    ConfigFlashblocksError,
+    ConfigLogError,
+    ConfigLogging,
+    ConfigMetrics,
+    ConfigMetricsError,
+    ConfigRpc,
+    ConfigRpcError,
+    ConfigTls,
+    ConfigTlsError,
+};
+
+pub(crate) const ALREADY_VALIDATED: &str = "parameter must have been validated already";
+
+pub(crate) static PARALLELISM: LazyLock<usize> =
+    LazyLock::new(|| std::thread::available_parallelism().map_or(2, std::num::NonZero::get));
+
+pub(crate) static PARALLELISM_STRING: LazyLock<String> = LazyLock::new(|| PARALLELISM.to_string());
+
+// Config --------------------------------------------------------------
+
+#[derive(Clone, Parser)]
+#[command(about, author, long_about = None, term_width = 90, version)]
+pub struct Config {
+    #[command(flatten)]
+    pub(crate) authrpc: ConfigAuthrpc,
+
+    #[command(flatten)]
+    pub(crate) circuit_breaker: ConfigCircuitBreaker,
+
+    #[command(flatten)]
+    pub(crate) flashblocks: ConfigFlashblocks,
+
+    #[command(flatten)]
+    pub(crate) logging: ConfigLogging,
+
+    #[command(flatten)]
+    pub(crate) metrics: ConfigMetrics,
+
+    #[command(flatten)]
+    pub(crate) rpc: ConfigRpc,
+
+    #[command(flatten)]
+    pub(crate) tls: ConfigTls,
+}
+
+impl Config {
+    pub fn setup() -> Self {
+        let mut res = Config::parse();
+
+        if let Some(errs) = res.clone().validate() {
+            for err in errs.iter() {
+                eprintln!("fatal: {err}");
+            }
+            process::exit(1);
+        };
+
+        res.logging.setup_logging();
+
+        res.preprocess();
+
+        res
+    }
+
+    pub(crate) fn validate(self) -> Option<Vec<ConfigError>> {
+        let mut errs: Vec<ConfigError> = vec![];
+
+        // authrpc proxy
+        if self.rpc.enabled &&
+            let Some(_errs) = self.authrpc.validate()
+        {
+            errs.append(&mut _errs.into_iter().map(|err| err.into()).collect());
+        }
+
+        // circuit-breaker
+        if let Some(_errs) = self.circuit_breaker.validate() {
+            errs.append(&mut _errs.into_iter().map(|err| err.into()).collect());
+        }
+
+        // flashblocks proxy
+        if self.flashblocks.enabled &&
+            let Some(_errs) = self.flashblocks.validate()
+        {
+            errs.append(&mut _errs.into_iter().map(|err| err.into()).collect());
+        }
+
+        // logging
+        if let Some(_errs) = self.logging.validate() {
+            errs.append(&mut _errs.into_iter().map(|err| err.into()).collect());
+        }
+
+        // metrics
+        if let Some(_errs) = self.metrics.validate() {
+            errs.append(&mut _errs.into_iter().map(|err| err.into()).collect());
+        }
+
+        // rpc proxy
+        if self.rpc.enabled &&
+            let Some(_errs) = self.rpc.validate()
+        {
+            errs.append(&mut _errs.into_iter().map(|err| err.into()).collect());
+        }
+
+        // tls
+        if (!self.tls.certificate.is_empty() || !self.tls.key.is_empty()) &&
+            let Some(_errs) = self.tls.validate()
+        {
+            errs.append(&mut _errs.into_iter().map(|err| err.into()).collect());
+        }
+
+        if !self.authrpc.enabled && !self.flashblocks.enabled && !self.rpc.enabled {
+            errs.push(ConfigError::NoEnabledProxies);
+        }
+
+        match errs.len() {
+            0 => None,
+            _ => Some(errs),
+        }
+    }
+
+    pub(crate) fn preprocess(&mut self) {
+        self.authrpc.preprocess();
+        self.rpc.preprocess();
+    }
+}
+
+// ConfigError ---------------------------------------------------------
+
+#[derive(Debug, Error)]
+pub(crate) enum ConfigError {
+    #[error("invalid authrpc proxy configuration: {0}")]
+    ConfigAuthrpcInvalid(ConfigAuthrpcError),
+
+    #[error("invalid circuit-breaker configuration: {0}")]
+    ConfigCircuitBreakerInvalid(ConfigCircuitBreakerError),
+
+    #[error("invalid flashblocks proxy configuration: {0}")]
+    ConfigFlashblocksInvalid(ConfigFlashblocksError),
+
+    #[error("invalid logging configuration: {0}")]
+    ConfigLoggingInvalid(ConfigLogError),
+
+    #[error("invalid metrics configuration: {0}")]
+    ConfigMetricsInvalid(ConfigMetricsError),
+
+    #[error("invalid rpc proxy configuration: {0}")]
+    ConfigRpcInvalid(ConfigRpcError),
+
+    #[error("invalid tls configuration: {0}")]
+    ConfigTlsInvalid(ConfigTlsError),
+
+    #[error("no enabled proxies")]
+    NoEnabledProxies,
+}
+
+impl From<ConfigAuthrpcError> for ConfigError {
+    fn from(err: ConfigAuthrpcError) -> Self {
+        Self::ConfigAuthrpcInvalid(err)
+    }
+}
+
+impl From<ConfigCircuitBreakerError> for ConfigError {
+    fn from(err: ConfigCircuitBreakerError) -> Self {
+        Self::ConfigCircuitBreakerInvalid(err)
+    }
+}
+
+impl From<ConfigFlashblocksError> for ConfigError {
+    fn from(err: ConfigFlashblocksError) -> Self {
+        Self::ConfigFlashblocksInvalid(err)
+    }
+}
+
+impl From<ConfigLogError> for ConfigError {
+    fn from(err: ConfigLogError) -> Self {
+        Self::ConfigLoggingInvalid(err)
+    }
+}
+
+impl From<ConfigMetricsError> for ConfigError {
+    fn from(err: ConfigMetricsError) -> Self {
+        Self::ConfigMetricsInvalid(err)
+    }
+}
+
+impl From<ConfigRpcError> for ConfigError {
+    fn from(err: ConfigRpcError) -> Self {
+        Self::ConfigRpcInvalid(err)
+    }
+}
+
+impl From<ConfigTlsError> for ConfigError {
+    fn from(err: ConfigTlsError) -> Self {
+        Self::ConfigTlsInvalid(err)
+    }
+}
