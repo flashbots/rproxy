@@ -48,5 +48,5 @@ pub fn decompress(body: Bytes, size: usize, content_encoding: String) -> (Bytes,
         _ => {}
     }
 
-    return (body.clone(), size);
+    (body.clone(), size)
 }

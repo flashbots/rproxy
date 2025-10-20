@@ -6,7 +6,11 @@ build:
 
 .PHONY: fmt
 fmt:
-	@rustfmt --config-path ./.rustfmt.toml --check ./crates/rproxy/**/*
+	@cargo +nightly fmt --check
+
+.PHONY: lint
+lint:
+	@cargo +nightly clippy --all-features -- -D warnings
 
 .PHONY: help
 help:
