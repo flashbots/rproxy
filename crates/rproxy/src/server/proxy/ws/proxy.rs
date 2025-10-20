@@ -36,11 +36,17 @@ use uuid::Uuid;
 use x509_parser::asn1_rs::ToStatic;
 
 use crate::{
-    config::{ConfigProxyWs, ConfigTls, PARALLELISM},
-    metrics::{LabelsProxyWs, Metrics},
-    proxy::{Proxy, ProxyConnectionGuard},
-    proxy_http::ProxyHttpRequestInfo,
-    proxy_ws::ProxyWsInner,
+    config::PARALLELISM,
+    server::{
+        metrics::{LabelsProxyWs, Metrics},
+        proxy::{
+            Proxy,
+            ProxyConnectionGuard,
+            config::ConfigTls,
+            http::ProxyHttpRequestInfo,
+            ws::{ProxyWsInner, config::ConfigProxyWs},
+        },
+    },
     utils::{Loggable, raw_transaction_to_hash},
 };
 

@@ -1,4 +1,4 @@
-use crate::{config::ConfigProxyWs, proxy::ProxyInner};
+use crate::server::proxy::{ProxyInner, ws::config::ConfigProxyWs};
 
 // ProxyWsInner --------------------------------------------------------
 

@@ -4,7 +4,7 @@ use awc::http::Uri;
 use clap::Args;
 use thiserror::Error;
 
-use crate::config::{ALREADY_VALIDATED, ConfigProxyWs};
+use crate::{config::ALREADY_VALIDATED, server::proxy::ws::config::ConfigProxyWs};
 
 // ConfigFlashblocks ---------------------------------------------------
 

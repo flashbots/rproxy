@@ -1,14 +1,5 @@
-use std::borrow::Cow;
-
 use serde::Deserialize;
-
-// JrpcError -----------------------------------------------------------
-
-#[derive(Clone, Deserialize)]
-pub(crate) struct JrpcError {
-    // pub(crate) code: i64,
-    // pub(crate) message: String,
-}
+use std::borrow::Cow;
 
 // JrpcRequestMeta -----------------------------------------------------
 
@@ -90,11 +81,4 @@ impl JrpcRequestMetaMaybeBatch {
             Self::Batch(_) => JRPC_METHOD_BATCH.clone(),
         }
     }
-}
-
-// JrpcResponseMeta ----------------------------------------------------
-
-#[derive(Clone, Deserialize)]
-pub(crate) struct JrpcResponseMeta {
-    pub(crate) error: Option<JrpcError>,
 }

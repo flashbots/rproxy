@@ -9,7 +9,7 @@ use parking_lot::Mutex;
 use tokio::sync::broadcast;
 use tracing::{debug, error, warn};
 
-use crate::config::ConfigCircuitBreaker;
+use crate::server::proxy::config::ConfigCircuitBreaker;
 
 // CircuitBreakerInner -------------------------------------------------
 

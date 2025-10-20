@@ -1,8 +1,9 @@
 use crate::{
-    config::ConfigProxyHttp,
     jrpc::JrpcRequestMetaMaybeBatch,
-    proxy::ProxyInner,
-    proxy_http::{ProxiedHttpRequest, ProxiedHttpResponse},
+    server::proxy::{
+        ProxyInner,
+        http::{ProxiedHttpRequest, ProxiedHttpResponse, config::ConfigProxyHttp},
+    },
 };
 
 // ProxyHttpInner ------------------------------------------------------

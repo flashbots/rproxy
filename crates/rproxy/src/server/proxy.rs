@@ -1,3 +1,10 @@
+pub(crate) mod circuit_breaker;
+pub(crate) mod config;
+pub(crate) mod http;
+pub(crate) mod ws;
+
+// ---------------------------------------------------------------------
+
 use std::{
     any::Any,
     sync::{
@@ -10,7 +17,7 @@ use actix_web::dev::Extensions;
 use tracing::{debug, warn};
 use uuid::Uuid;
 
-use crate::metrics::{LabelsProxy, Metrics};
+use crate::server::metrics::{LabelsProxy, Metrics};
 
 // Proxy ---------------------------------------------------------------
 

@@ -1,8 +1,10 @@
 use crate::{
-    config::ConfigAuthrpc,
     jrpc::{JrpcRequestMeta, JrpcRequestMetaMaybeBatch},
-    proxy::ProxyInner,
-    proxy_http::{ProxiedHttpRequest, ProxiedHttpResponse, ProxyHttpInner},
+    server::proxy::{
+        ProxyInner,
+        config::ConfigAuthrpc,
+        http::{ProxiedHttpRequest, ProxiedHttpResponse, ProxyHttpInner},
+    },
 };
 
 const PROXY_HTTP_INNER_AUTHRPC_NAME: &str = "rproxy-authrpc";

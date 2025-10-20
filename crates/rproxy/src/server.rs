@@ -1,3 +1,10 @@
+pub mod config;
+
+pub(crate) mod metrics;
+pub(crate) mod proxy;
+
+// ---------------------------------------------------------------------
+
 use std::{error::Error, sync::Arc};
 
 use tokio::{
@@ -9,12 +16,17 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
 use crate::{
-    circuit_breaker::CircuitBreaker,
-    config::{Config, ConfigAuthrpc, ConfigFlashblocks, ConfigRpc},
-    metrics::Metrics,
-    proxy::ProxyInner,
-    proxy_http::{ProxyHttp, ProxyHttpInnerAuthrpc, ProxyHttpInnerRpc},
-    proxy_ws::{ProxyWs, ProxyWsInnerFlashblocks},
+    config::Config,
+    server::{
+        metrics::Metrics,
+        proxy::{
+            ProxyInner,
+            circuit_breaker::CircuitBreaker,
+            config::{ConfigAuthrpc, ConfigFlashblocks, ConfigRpc},
+            http::{ProxyHttp, ProxyHttpInnerAuthrpc, ProxyHttpInnerRpc},
+            ws::{ProxyWs, ProxyWsInnerFlashblocks},
+        },
+    },
     utils::tls_certificate_validity_timestamps,
 };
 

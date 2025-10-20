@@ -1,10 +1,12 @@
 use tracing::warn;
 
 use crate::{
-    config::ConfigRpc,
     jrpc::{JrpcError, JrpcRequestMeta, JrpcRequestMetaMaybeBatch, JrpcResponseMeta},
-    proxy::ProxyInner,
-    proxy_http::{ProxiedHttpRequest, ProxiedHttpResponse, ProxyHttpInner},
+    server::proxy::{
+        ProxyInner,
+        config::ConfigRpc,
+        http::{ProxiedHttpRequest, ProxiedHttpResponse, ProxyHttpInner},
+    },
 };
 
 const PROXY_HTTP_INNER_RPC_NAME: &str = "rproxy-rpc";

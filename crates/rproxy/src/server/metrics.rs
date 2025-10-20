@@ -1,4 +1,8 @@
-use std::{net::TcpListener, sync::Arc, time::Duration};
+mod candlestick;
+
+// ---------------------------------------------------------------------
+
+use std::{borrow::Cow, net::TcpListener, sync::Arc, time::Duration};
 
 use actix_web::{
     App,
@@ -10,22 +14,14 @@ use actix_web::{
 };
 use awc::http::Method;
 use prometheus_client::{
+    encoding::EncodeLabelSet,
     metrics::{counter::Counter, family::Family, gauge::Gauge},
     registry::{Registry, Unit},
 };
 use socket2::{SockAddr, Socket, TcpKeepalive};
 use tracing::{error, info};
 
-use crate::{
-    config::ConfigMetrics,
-    metrics::{
-        Candlestick,
-        LabelsProxy,
-        LabelsProxyClientInfo,
-        LabelsProxyHttpJrpc,
-        LabelsProxyWs,
-    },
-};
+use crate::server::{config::ConfigMetrics, metrics::candlestick::Candlestick};
 
 // Metrics -------------------------------------------------------------
 
@@ -329,7 +325,7 @@ impl Metrics {
         // allow time to flush buffers on close
         socket.set_linger(Some(Duration::from_secs(1)))?;
 
-        // allow binding to the socket whlie there are still TIME_WAIT conns
+        // allow binding to the socket while there are still TIME_WAIT connections
         socket.set_reuse_address(true)?;
 
         socket.set_tcp_keepalive(
@@ -366,4 +362,35 @@ impl Metrics {
             .content_type("application/openmetrics-text; version=1.0.0; charset=utf-8")
             .body(body))
     }
+}
+
+// LabelsProxy ---------------------------------------------------------
+
+#[derive(Clone, Debug, Default, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub(crate) struct LabelsProxy {
+    pub(crate) proxy: &'static str,
+}
+
+// LabelsProxyClientInfo -----------------------------------------------
+
+#[derive(Clone, Debug, Default, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub(crate) struct LabelsProxyClientInfo {
+    pub(crate) proxy: &'static str,
+    pub(crate) user_agent: String,
+}
+
+// LabelsProxyHttpJrpc -------------------------------------------------
+
+#[derive(Clone, Debug, Default, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub(crate) struct LabelsProxyHttpJrpc {
+    pub(crate) proxy: &'static str,
+    pub(crate) jrpc_method: Cow<'static, str>,
+}
+
+// LabelsProxyWs -------------------------------------------------------
+
+#[derive(Clone, Debug, Default, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub(crate) struct LabelsProxyWs {
+    pub(crate) proxy: &'static str,
+    pub(crate) destination: &'static str,
 }

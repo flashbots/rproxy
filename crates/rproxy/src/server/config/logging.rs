@@ -14,7 +14,7 @@ pub(crate) struct ConfigLogging {
         value_name = "format"
     )]
     #[clap(value_enum)]
-    pub(crate) format: ConfigLogFormat,
+    pub(crate) format: ConfigLoggingFormat,
 
     /// logging level
     #[arg(
@@ -29,12 +29,12 @@ pub(crate) struct ConfigLogging {
 }
 
 impl ConfigLogging {
-    pub(crate) fn validate(self) -> Option<Vec<ConfigLogError>> {
-        let mut errs: Vec<ConfigLogError> = vec![];
+    pub(crate) fn validate(self) -> Option<Vec<ConfigLoggingError>> {
+        let mut errs: Vec<ConfigLoggingError> = vec![];
 
         // level
         let _ = EnvFilter::builder().parse(self.level).map_err(|err| {
-            errs.push(ConfigLogError::LevelInvalid { err: err.to_string() });
+            errs.push(ConfigLoggingError::LevelInvalid { err: err.to_string() });
         });
 
         match errs.len() {
@@ -45,14 +45,14 @@ impl ConfigLogging {
 
     pub(crate) fn setup_logging(&self) {
         match self.format {
-            ConfigLogFormat::Json => {
+            ConfigLoggingFormat::Json => {
                 tracing_subscriber::registry()
                     .with(EnvFilter::from(self.level.clone()))
                     .with(fmt::layer().json().flatten_event(true))
                     .init();
             }
 
-            ConfigLogFormat::Text => {
+            ConfigLoggingFormat::Text => {
                 tracing_subscriber::registry()
                     .with(EnvFilter::from(self.level.clone()))
                     .with(fmt::layer())
@@ -65,7 +65,7 @@ impl ConfigLogging {
 // ConfigLogFormat -----------------------------------------------------
 
 #[derive(Clone, Debug, clap::ValueEnum)]
-pub(crate) enum ConfigLogFormat {
+pub(crate) enum ConfigLoggingFormat {
     Json,
     Text,
 }
@@ -73,7 +73,7 @@ pub(crate) enum ConfigLogFormat {
 // ConfigLogError ------------------------------------------------------
 
 #[derive(Debug, Clone, Error)]
-pub(crate) enum ConfigLogError {
+pub(crate) enum ConfigLoggingError {
     #[error("invalid log level filter: {err}")]
     LevelInvalid { err: String },
 }

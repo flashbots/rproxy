@@ -47,11 +47,20 @@ use uuid::Uuid;
 use x509_parser::asn1_rs::ToStatic;
 
 use crate::{
-    config::{ConfigProxyHttp, ConfigProxyHttpMirroringStrategy, ConfigTls, PARALLELISM},
+    config::PARALLELISM,
     jrpc::JrpcRequestMetaMaybeBatch,
-    metrics::{LabelsProxy, LabelsProxyClientInfo, LabelsProxyHttpJrpc, Metrics},
-    proxy::{Proxy, ProxyConnectionGuard},
-    proxy_http::ProxyHttpInner,
+    server::{
+        metrics::{LabelsProxy, LabelsProxyClientInfo, LabelsProxyHttpJrpc, Metrics},
+        proxy::{
+            Proxy,
+            ProxyConnectionGuard,
+            config::ConfigTls,
+            http::{
+                ProxyHttpInner,
+                config::{ConfigProxyHttp, ConfigProxyHttpMirroringStrategy},
+            },
+        },
+    },
     utils::{Loggable, decompress, is_hop_by_hop_header, raw_transaction_to_hash},
 };
 

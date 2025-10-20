@@ -1,5 +1,4 @@
-use crate::{config::ConfigFlashblocks, proxy::ProxyInner, proxy_ws::ProxyWsInner};
-
+use crate::server::proxy::{ProxyInner, config::ConfigFlashblocks, ws::ProxyWsInner};
 const PROXY_WS_FLASHBLOCKS_RPC_NAME: &str = "rproxy-flashblocks";
 
 // ProxyWsInnerFlashblocks ---------------------------------------------

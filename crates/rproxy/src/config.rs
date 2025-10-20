@@ -3,21 +3,20 @@ use std::{process, sync::LazyLock};
 use clap::Parser;
 use thiserror::Error;
 
-use crate::config::{
-    ConfigAuthrpc,
-    ConfigAuthrpcError,
-    ConfigCircuitBreaker,
-    ConfigCircuitBreakerError,
-    ConfigFlashblocks,
-    ConfigFlashblocksError,
-    ConfigLogError,
-    ConfigLogging,
-    ConfigMetrics,
-    ConfigMetricsError,
-    ConfigRpc,
-    ConfigRpcError,
-    ConfigTls,
-    ConfigTlsError,
+use crate::server::{
+    config::{ConfigLoggingError, ConfigLogging, ConfigMetrics, ConfigMetricsError},
+    proxy::config::{
+        ConfigAuthrpc,
+        ConfigAuthrpcError,
+        ConfigCircuitBreaker,
+        ConfigCircuitBreakerError,
+        ConfigFlashblocks,
+        ConfigFlashblocksError,
+        ConfigRpc,
+        ConfigRpcError,
+        ConfigTls,
+        ConfigTlsError,
+    },
 };
 
 pub(crate) const ALREADY_VALIDATED: &str = "parameter must have been validated already";
@@ -148,7 +147,7 @@ pub(crate) enum ConfigError {
     ConfigFlashblocksInvalid(ConfigFlashblocksError),
 
     #[error("invalid logging configuration: {0}")]
-    ConfigLoggingInvalid(ConfigLogError),
+    ConfigLoggingInvalid(ConfigLoggingError),
 
     #[error("invalid metrics configuration: {0}")]
     ConfigMetricsInvalid(ConfigMetricsError),
@@ -181,8 +180,8 @@ impl From<ConfigFlashblocksError> for ConfigError {
     }
 }
 
-impl From<ConfigLogError> for ConfigError {
-    fn from(err: ConfigLogError) -> Self {
+impl From<ConfigLoggingError> for ConfigError {
+    fn from(err: ConfigLoggingError) -> Self {
         Self::ConfigLoggingInvalid(err)
     }
 }

@@ -9,7 +9,8 @@ use tracing::warn;
 use url::Url;
 
 use crate::{
-    config::{ALREADY_VALIDATED, ConfigProxyHttp, ConfigProxyHttpMirroringStrategy},
+    config::ALREADY_VALIDATED,
+    server::proxy::http::config::{ConfigProxyHttp, ConfigProxyHttpMirroringStrategy},
     utils::get_all_local_ip_addresses,
 };
 
