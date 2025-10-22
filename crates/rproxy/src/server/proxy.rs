@@ -52,20 +52,20 @@ pub(crate) trait Proxy {
                 let remote_addr = match stream.peer_addr() {
                     Ok(local_addr) => Some(local_addr.to_string()),
                     Err(err) => {
-                        warn!(proxy = P::name(), error = ?err, "Failed to get remote address");
+                        warn!(proxy = proxy_name, error = ?err, "Failed to get remote address");
                         None
                     }
                 };
                 let local_addr = match stream.local_addr() {
                     Ok(local_addr) => Some(local_addr.to_string()),
                     Err(err) => {
-                        warn!(proxy = P::name(), error = ?err, "Failed to get remote address");
+                        warn!(proxy = proxy_name, error = ?err, "Failed to get remote address");
                         None
                     }
                 };
 
                 debug!(
-                    proxy = P::name(),
+                    proxy = proxy_name,
                     connection_id = %id,
                     remote_addr = remote_addr.as_ref().map_or("unknown", |v| v.as_str()),
                     local_addr = local_addr.as_ref().map_or("unknown", |v| v.as_str()),
