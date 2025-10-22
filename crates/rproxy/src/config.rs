@@ -59,7 +59,7 @@ impl Config {
 
         if let Some(errs) = res.clone().validate() {
             for err in errs.iter() {
-                eprintln!("fatal: {}", err);
+                eprintln!("fatal: {err}");
             }
             process::exit(1);
         };

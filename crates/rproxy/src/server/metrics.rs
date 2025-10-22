@@ -342,6 +342,7 @@ impl Metrics {
         Ok(socket.into())
     }
 
+    #[expect(clippy::unused_async, reason = "required by the actix framework")]
     async fn receive(
         req: HttpRequest,
         _: web::Payload,
