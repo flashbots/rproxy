@@ -99,7 +99,7 @@ where
             inner.clone(),
             id,
             shared.metrics.clone(),
-            &shared.proxy_name,
+            shared.proxy_name,
             config.backend_url(),
             connections_limit,
             config.backend_timeout(),
@@ -114,7 +114,7 @@ where
                         shared.inner(),
                         id,
                         shared.metrics.clone(),
-                        &shared.proxy_name,
+                        shared.proxy_name,
                         peer_url.to_owned(),
                         config.backend_max_concurrent_requests(),
                         config.backend_timeout(),
@@ -128,7 +128,7 @@ where
             worker_id: id,
             inner: inner.clone(),
             metrics: shared.metrics.clone(),
-            proxy_name: shared.proxy_name.clone(),
+            proxy_name: shared.proxy_name,
             mirroring_peers: peers.clone(),
             mirroring_peer_round_robin_index: AtomicUsize::new(0),
         }
@@ -141,7 +141,7 @@ where
         config: C,
         tls: ConfigTls,
         metrics: Arc<Metrics>,
-        proxy_name: &str,
+        proxy_name: &'static str,
         canceller: tokio_util::sync::CancellationToken,
         resetter: broadcast::Sender<()>,
     ) -> Result<(), Box<dyn std::error::Error + Send>> {
@@ -195,11 +195,7 @@ where
                 .wrap(NormalizePath::new(TrailingSlash::Trim))
                 .default_service(web::route().to(Self::receive))
         })
-        .on_connect(Self::on_connect(
-            metrics.clone(),
-            client_connections_count,
-            proxy_name.to_string(),
-        ))
+        .on_connect(Self::on_connect(metrics.clone(), client_connections_count, proxy_name))
         .shutdown_signal(canceller.cancelled_owned())
         .workers(workers_count);
 
@@ -315,7 +311,7 @@ where
                 .metrics
                 .client_info
                 .get_or_create(&LabelsProxyClientInfo {
-                    proxy: this.shared.proxy_name.clone(),
+                    proxy: this.shared.proxy_name,
                     user_agent: user_agent.to_string(),
                 })
                 .inc();
@@ -344,7 +340,7 @@ where
                 this.shared
                     .metrics
                     .http_proxy_failure_count
-                    .get_or_create(&LabelsProxy { proxy: this.shared.proxy_name.clone() })
+                    .get_or_create(&LabelsProxy { proxy: this.shared.proxy_name })
                     .inc();
                 return Ok(HttpResponse::BadGateway().body(format!("Backend error: {:?}", err)));
             }
@@ -407,7 +403,7 @@ where
         inner: Arc<P>,
         worker_id: Uuid,
         metrics: Arc<Metrics>,
-        proxy_name: &str,
+        proxy_name: &'static str,
         mirroring_peers: Arc<Vec<actix::Addr<ProxyHttpBackendEndpoint<C, P>>>>,
         mut mirroring_peer_round_robin_index: usize,
     ) {
@@ -478,7 +474,7 @@ where
         mut mrr_res: ProxiedHttpResponse,
         inner: Arc<P>,
         metrics: Arc<Metrics>,
-        proxy_name: &str,
+        proxy_name: &'static str,
         worker_id: Uuid,
     ) {
         if cli_req.decompressed_size < cli_req.size {
@@ -496,7 +492,7 @@ where
         metrics
             .http_mirror_success_count
             .get_or_create(&LabelsProxyHttpJrpc {
-                proxy: proxy_name.to_string(),
+                proxy: proxy_name,
                 jrpc_method: cli_req.info.jrpc_method_enriched,
             })
             .inc();
@@ -740,18 +736,16 @@ where
         req: &ProxiedHttpRequest,
         res: &ProxiedHttpResponse,
         metrics: Arc<Metrics>,
-        proxy_name: &str,
+        proxy_name: &'static str,
     ) {
         let metric_labels_jrpc = match jrpc {
-            JrpcRequestMetaMaybeBatch::Single(jrpc) => LabelsProxyHttpJrpc {
-                jrpc_method: jrpc.method_enriched(),
-                proxy: proxy_name.to_string(),
-            },
+            JrpcRequestMetaMaybeBatch::Single(jrpc) => {
+                LabelsProxyHttpJrpc { jrpc_method: jrpc.method_enriched(), proxy: proxy_name }
+            }
 
-            JrpcRequestMetaMaybeBatch::Batch(_) => LabelsProxyHttpJrpc {
-                jrpc_method: Cow::Borrowed("batch"),
-                proxy: proxy_name.to_string(),
-            },
+            JrpcRequestMetaMaybeBatch::Batch(_) => {
+                LabelsProxyHttpJrpc { jrpc_method: Cow::Borrowed("batch"), proxy: proxy_name }
+            }
         };
 
         let latency_backend = 1000000.0 * (res.start() - req.end()).as_seconds_f64();
@@ -785,7 +779,7 @@ where
                 for jrpc in batch.iter() {
                     let metric_labels_jrpc = LabelsProxyHttpJrpc {
                         jrpc_method: jrpc.method_enriched(),
-                        proxy: proxy_name.to_string(),
+                        proxy: proxy_name,
                     };
                     metrics.http_proxy_success_count.get_or_create(&metric_labels_jrpc).inc();
                 }
@@ -843,7 +837,7 @@ where
 {
     inner: Arc<P>,
     metrics: Arc<Metrics>,
-    proxy_name: String,
+    proxy_name: &'static str,
 
     client_connections_count: Arc<AtomicI64>,
 
@@ -855,11 +849,11 @@ where
     C: ConfigProxyHttp,
     P: ProxyHttpInner<C>,
 {
-    fn new(config: C, metrics: &Arc<Metrics>, proxy_name: &str) -> Self {
+    fn new(config: C, metrics: &Arc<Metrics>, proxy_name: &'static str) -> Self {
         Self {
             inner: Arc::new(P::new(config)),
             metrics: metrics.clone(),
-            proxy_name: proxy_name.to_string(),
+            proxy_name,
             client_connections_count: Arc::new(AtomicI64::new(0)),
             _config: PhantomData,
         }
@@ -886,7 +880,7 @@ where
     inner: Arc<P>,
     worker_id: Uuid,
     metrics: Arc<Metrics>,
-    proxy_name: String,
+    proxy_name: &'static str,
 
     /// mirroring_peers is the vector of endpoints for mirroring peers.
     mirroring_peers: Arc<Vec<actix::Addr<ProxyHttpBackendEndpoint<C, P>>>>,
@@ -919,7 +913,7 @@ where
     fn handle(&mut self, msg: ProxiedHttpCombo, ctx: &mut Self::Context) -> Self::Result {
         let inner = self.inner.clone();
         let metrics = self.metrics.clone();
-        let proxy_name = self.proxy_name.clone();
+        let proxy_name = self.proxy_name;
         let worker_id = self.worker_id;
         let mirroring_peers = self.mirroring_peers.clone();
         let mut mirroring_peer_round_robin_index =
@@ -933,7 +927,7 @@ where
                     inner,
                     worker_id,
                     metrics,
-                    &proxy_name,
+                    proxy_name,
                     mirroring_peers,
                     mirroring_peer_round_robin_index,
                 );
@@ -960,7 +954,7 @@ where
     inner: Arc<P>,
     worker_id: Uuid,
     metrics: Arc<Metrics>,
-    proxy_name: String,
+    proxy_name: &'static str,
 
     client: Client,
     url: Url,
@@ -977,7 +971,7 @@ where
         inner: Arc<P>,
         worker_id: Uuid,
         metrics: Arc<Metrics>,
-        proxy_name: &str,
+        proxy_name: &'static str,
         url: Url,
         connections_limit: usize,
         timeout: std::time::Duration,
@@ -993,15 +987,7 @@ where
             .timeout(timeout)
             .finish();
 
-        Self {
-            inner,
-            worker_id,
-            metrics,
-            proxy_name: proxy_name.to_string(),
-            client,
-            url,
-            _config: PhantomData,
-        }
+        Self { inner, worker_id, metrics, proxy_name, client, url, _config: PhantomData }
     }
 
     fn new_backend_request(&self, info: &ProxyHttpRequestInfo) -> ClientRequest {
@@ -1043,7 +1029,7 @@ where
         let inner = self.inner.clone();
         let worker_id = self.worker_id;
         let metrics = self.metrics.clone();
-        let proxy_name = self.proxy_name.clone();
+        let proxy_name = self.proxy_name;
 
         let mrr_req = self.new_backend_request(&cli_req.info);
         let mrr_req_body = cli_req.body.clone();
@@ -1076,12 +1062,7 @@ where
                                     end,
                                 };
                                 ProxyHttp::<C, P>::postprocess_mirrored_response(
-                                    cli_req,
-                                    mrr_res,
-                                    inner,
-                                    metrics,
-                                    &proxy_name,
-                                    worker_id,
+                                    cli_req, mrr_res, inner, metrics, proxy_name, worker_id,
                                 );
                             }
                             Err(err) => {
@@ -1094,7 +1075,7 @@ where
                                 );
                                 metrics
                                     .http_mirror_failure_count
-                                    .get_or_create(&LabelsProxy { proxy: proxy_name.clone() })
+                                    .get_or_create(&LabelsProxy { proxy: proxy_name })
                                     .inc();
                             }
                         };
@@ -1110,7 +1091,7 @@ where
                         );
                         metrics
                             .http_mirror_failure_count
-                            .get_or_create(&LabelsProxy { proxy: proxy_name.clone() })
+                            .get_or_create(&LabelsProxy { proxy: proxy_name })
                             .inc();
                     }
                 }

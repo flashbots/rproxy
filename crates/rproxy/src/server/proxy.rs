@@ -25,12 +25,12 @@ pub(crate) trait Proxy {
     fn on_connect(
         metrics: Arc<Metrics>,
         client_connections_count: Arc<AtomicI64>,
-        proxy_name: String,
+        proxy_name: &'static str,
     ) -> impl Fn(&dyn Any, &mut Extensions) {
         move |connection, extensions| {
             {
                 let val = client_connections_count.fetch_add(1, Ordering::Relaxed) + 1;
-                let metric_labels = LabelsProxy { proxy: proxy_name.clone() };
+                let metric_labels = LabelsProxy { proxy: proxy_name };
 
                 metrics.client_connections_active_count.get_or_create(&metric_labels).set(val);
                 metrics.client_connections_established_count.get_or_create(&metric_labels).inc();
@@ -74,7 +74,7 @@ pub(crate) trait Proxy {
 
                 extensions.insert(ProxyConnectionGuard::new(
                     id,
-                    &proxy_name,
+                    proxy_name,
                     remote_addr,
                     local_addr,
                     &metrics,
@@ -92,7 +92,7 @@ pub struct ProxyConnectionGuard {
     pub remote_addr: Option<String>,
     pub local_addr: Option<String>,
 
-    proxy_name: String,
+    proxy_name: &'static str,
     metrics: Arc<Metrics>,
     client_connections_count: Arc<AtomicI64>,
 }
@@ -100,7 +100,7 @@ pub struct ProxyConnectionGuard {
 impl ProxyConnectionGuard {
     fn new(
         id: Uuid,
-        proxy_name: &str,
+        proxy_name: &'static str,
         remote_addr: Option<String>,
         local_addr: Option<String>,
         metrics: &Arc<Metrics>,
@@ -110,7 +110,7 @@ impl ProxyConnectionGuard {
             id,
             remote_addr,
             local_addr,
-            proxy_name: proxy_name.to_string(),
+            proxy_name,
             metrics: metrics.clone(),
             client_connections_count,
         }
@@ -121,7 +121,7 @@ impl Drop for ProxyConnectionGuard {
     fn drop(&mut self) {
         let val = self.client_connections_count.fetch_sub(1, Ordering::Relaxed) - 1;
 
-        let metric_labels = LabelsProxy { proxy: self.proxy_name.clone() };
+        let metric_labels = LabelsProxy { proxy: self.proxy_name };
 
         self.metrics.client_connections_active_count.get_or_create(&metric_labels).set(val);
         self.metrics.client_connections_closed_count.get_or_create(&metric_labels).inc();

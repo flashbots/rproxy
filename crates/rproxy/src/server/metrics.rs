@@ -368,14 +368,14 @@ impl Metrics {
 
 #[derive(Clone, Debug, Default, Hash, PartialEq, Eq, EncodeLabelSet)]
 pub(crate) struct LabelsProxy {
-    pub(crate) proxy: String,
+    pub(crate) proxy: &'static str,
 }
 
 // LabelsProxyClientInfo -----------------------------------------------
 
 #[derive(Clone, Debug, Default, Hash, PartialEq, Eq, EncodeLabelSet)]
 pub(crate) struct LabelsProxyClientInfo {
-    pub(crate) proxy: String,
+    pub(crate) proxy: &'static str,
     pub(crate) user_agent: String,
 }
 
@@ -383,7 +383,7 @@ pub(crate) struct LabelsProxyClientInfo {
 
 #[derive(Clone, Debug, Default, Hash, PartialEq, Eq, EncodeLabelSet)]
 pub(crate) struct LabelsProxyHttpJrpc {
-    pub(crate) proxy: String,
+    pub(crate) proxy: &'static str,
     pub(crate) jrpc_method: Cow<'static, str>,
 }
 
@@ -391,6 +391,6 @@ pub(crate) struct LabelsProxyHttpJrpc {
 
 #[derive(Clone, Debug, Default, Hash, PartialEq, Eq, EncodeLabelSet)]
 pub(crate) struct LabelsProxyWs {
-    pub(crate) proxy: String,
+    pub(crate) proxy: &'static str,
     pub(crate) destination: &'static str,
 }

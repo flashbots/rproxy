@@ -103,7 +103,7 @@ where
         let postprocessor = ProxyWsPostprocessor::<C, P> {
             inner: shared.inner.clone(),
             metrics: shared.metrics.clone(),
-            proxy_name: shared.proxy_name.clone(),
+            proxy_name: shared.proxy_name,
             worker_id: id,
             _config: PhantomData,
         }
@@ -132,7 +132,7 @@ where
         config: C,
         tls: ConfigTls,
         metrics: Arc<Metrics>,
-        proxy_name: &str,
+        proxy_name: &'static str,
         canceller: tokio_util::sync::CancellationToken,
         resetter: broadcast::Sender<()>,
     ) -> Result<(), Box<dyn std::error::Error + Send>> {
@@ -177,11 +177,7 @@ where
                 .wrap(NormalizePath::new(TrailingSlash::Trim))
                 .default_service(web::route().to(Self::receive))
         })
-        .on_connect(Self::on_connect(
-            metrics.clone(),
-            client_connections_count,
-            proxy_name.to_string(),
-        ))
+        .on_connect(Self::on_connect(metrics.clone(), client_connections_count, proxy_name))
         .shutdown_signal(canceller.cancelled_owned())
         .workers(workers_count);
 
@@ -624,7 +620,7 @@ where
                                 .metrics
                                 .ws_proxy_failure_count
                                 .get_or_create(&LabelsProxyWs {
-                                    proxy: this.shared.proxy_name.clone(),
+                                    proxy: this.shared.proxy_name,
                                     destination: WS_LABEL_BACKEND,
                                 })
                                 .inc();
@@ -661,7 +657,7 @@ where
                                 .metrics
                                 .ws_proxy_failure_count
                                 .get_or_create(&LabelsProxyWs {
-                                    proxy: this.shared.proxy_name.clone(),
+                                    proxy: this.shared.proxy_name,
                                     destination: WS_LABEL_BACKEND,
                                 })
                                 .inc();
@@ -702,7 +698,7 @@ where
                                 .metrics
                                 .ws_latency_client
                                 .get_or_create(&LabelsProxyWs {
-                                    proxy: this.shared.proxy_name.clone(),
+                                    proxy: this.shared.proxy_name,
                                     destination: WS_LABEL_BACKEND,
                                 })
                                 .record(
@@ -797,7 +793,7 @@ where
                                 .metrics
                                 .ws_proxy_failure_count
                                 .get_or_create(&LabelsProxyWs {
-                                    proxy: this.shared.proxy_name.clone(),
+                                    proxy: this.shared.proxy_name,
                                     destination: WS_LABEL_CLIENT,
                                 })
                                 .inc();
@@ -826,7 +822,7 @@ where
                                 .metrics
                                 .ws_proxy_failure_count
                                 .get_or_create(&LabelsProxyWs {
-                                    proxy: this.shared.proxy_name.clone(),
+                                    proxy: this.shared.proxy_name,
                                     destination: WS_LABEL_CLIENT,
                                 })
                                 .inc();
@@ -867,7 +863,7 @@ where
                                 .metrics
                                 .ws_latency_backend
                                 .get_or_create(&LabelsProxyWs {
-                                    proxy: this.shared.proxy_name.clone(),
+                                    proxy: this.shared.proxy_name,
                                     destination: WS_LABEL_BACKEND,
                                 })
                                 .record(
@@ -938,7 +934,7 @@ where
         msg: ProxyWsMessage,
         inner: Arc<P>,
         metrics: Arc<Metrics>,
-        proxy_name: &str,
+        proxy_name: &'static str,
         worker_id: Uuid,
     ) {
         Self::maybe_log_proxied_message(&msg, inner.clone(), worker_id);
@@ -1061,12 +1057,11 @@ where
     fn emit_metrics_on_proxy_success(
         msg: &ProxyWsMessage,
         metrics: Arc<Metrics>,
-        proxy_name: &str,
+        proxy_name: &'static str,
     ) {
         match msg {
             ProxyWsMessage::BackendToClientBinary { msg, info: _, start, end } => {
-                let labels =
-                    LabelsProxyWs { proxy: proxy_name.to_string(), destination: WS_LABEL_CLIENT };
+                let labels = LabelsProxyWs { proxy: proxy_name, destination: WS_LABEL_CLIENT };
                 metrics
                     .ws_latency_proxy
                     .get_or_create(&labels)
@@ -1076,8 +1071,7 @@ where
             }
 
             ProxyWsMessage::BackendToClientText { msg, info: _, start, end } => {
-                let labels =
-                    LabelsProxyWs { proxy: proxy_name.to_string(), destination: WS_LABEL_CLIENT };
+                let labels = LabelsProxyWs { proxy: proxy_name, destination: WS_LABEL_CLIENT };
                 metrics
                     .ws_latency_proxy
                     .get_or_create(&labels)
@@ -1087,8 +1081,7 @@ where
             }
 
             ProxyWsMessage::ClientToBackendBinary { msg, info: _, start, end } => {
-                let labels =
-                    LabelsProxyWs { proxy: proxy_name.to_string(), destination: WS_LABEL_BACKEND };
+                let labels = LabelsProxyWs { proxy: proxy_name, destination: WS_LABEL_BACKEND };
                 metrics
                     .ws_latency_proxy
                     .get_or_create(&labels)
@@ -1098,8 +1091,7 @@ where
             }
 
             ProxyWsMessage::ClientToBackendText { msg, info: _, start, end } => {
-                let labels =
-                    LabelsProxyWs { proxy: proxy_name.to_string(), destination: WS_LABEL_BACKEND };
+                let labels = LabelsProxyWs { proxy: proxy_name, destination: WS_LABEL_BACKEND };
                 metrics
                     .ws_latency_proxy
                     .get_or_create(&labels)
@@ -1128,7 +1120,7 @@ where
 {
     inner: Arc<P>,
     metrics: Arc<Metrics>,
-    proxy_name: String,
+    proxy_name: &'static str,
 
     client_connections_count: Arc<AtomicI64>,
 
@@ -1140,11 +1132,11 @@ where
     C: ConfigProxyWs,
     P: ProxyWsInner<C>,
 {
-    fn new(config: C, metrics: &Arc<Metrics>, proxy_name: &str) -> Self {
+    fn new(config: C, metrics: &Arc<Metrics>, proxy_name: &'static str) -> Self {
         Self {
             inner: Arc::new(P::new(config)),
             metrics: metrics.clone(),
-            proxy_name: proxy_name.to_string(),
+            proxy_name,
             client_connections_count: Arc::new(AtomicI64::new(0)),
             _config: PhantomData,
         }
@@ -1220,7 +1212,7 @@ where
     inner: Arc<P>,
     worker_id: Uuid,
     metrics: Arc<Metrics>,
-    proxy_name: String,
+    proxy_name: &'static str,
 
     _config: PhantomData<C>,
 }
@@ -1247,12 +1239,12 @@ where
     fn handle(&mut self, msg: ProxyWsMessage, ctx: &mut Self::Context) -> Self::Result {
         let inner = self.inner.clone();
         let metrics = self.metrics.clone();
-        let proxy_name = self.proxy_name.clone();
+        let proxy_name = self.proxy_name;
         let worker_id = self.worker_id;
 
         ctx.spawn(
             async move {
-                ProxyWs::<C, P>::finalise_proxying(msg, inner, metrics, &proxy_name, worker_id);
+                ProxyWs::<C, P>::finalise_proxying(msg, inner, metrics, proxy_name, worker_id);
             }
             .into_actor(self),
         );
