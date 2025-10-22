@@ -960,7 +960,7 @@ where
                     remote_addr = info.remote_addr(),
                     ts_message_received = start.format(&Iso8601::DEFAULT).unwrap_or_default(),
                     latency_proxying = (*end - *start).as_seconds_f64(),
-                    message = tracing::field::valuable(&json_msg),
+                    json_msg = tracing::field::valuable(&json_msg),
                     "Proxied binary message to client",
                 );
             }
@@ -982,7 +982,7 @@ where
                     remote_addr = info.remote_addr(),
                     ts_message_received = start.format(&Iso8601::DEFAULT).unwrap_or_default(),
                     latency_proxying = (*end - *start).as_seconds_f64(),
-                    message = tracing::field::valuable(&json_msg),
+                    json_msg = tracing::field::valuable(&json_msg),
                     "Proxied text message to client",
                 );
             }
@@ -1004,7 +1004,7 @@ where
                     remote_addr = info.remote_addr(),
                     ts_message_received = start.format(&Iso8601::DEFAULT).unwrap_or_default(),
                     latency_proxying = (*end - *start).as_seconds_f64(),
-                    message = tracing::field::valuable(&json_msg),
+                    json_msg = tracing::field::valuable(&json_msg),
                     "Proxied binary message to backend",
                 );
             }
@@ -1026,7 +1026,7 @@ where
                     remote_addr = info.remote_addr(),
                     ts_message_received = start.format(&Iso8601::DEFAULT).unwrap_or_default(),
                     latency_proxying = (*end - *start).as_seconds_f64(),
-                    message = tracing::field::valuable(&json_msg),
+                    json_msg = tracing::field::valuable(&json_msg),
                     "Proxied text message to backend",
                 );
             }
