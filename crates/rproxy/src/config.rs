@@ -4,7 +4,7 @@ use clap::Parser;
 use thiserror::Error;
 
 use crate::server::{
-    config::{ConfigLoggingError, ConfigLogging, ConfigMetrics, ConfigMetricsError},
+    config::{ConfigLogging, ConfigLoggingError, ConfigMetrics, ConfigMetricsError},
     proxy::config::{
         ConfigAuthrpc,
         ConfigAuthrpcError,

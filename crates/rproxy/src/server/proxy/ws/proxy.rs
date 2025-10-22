@@ -98,11 +98,12 @@ where
 
         let config = shared.config();
 
-        let backend = ProxyWsBackendEndpoint::new(id, config.backend_url());
+        let backend = ProxyWsBackendEndpoint::new(id, shared.proxy_name, config.backend_url());
 
         let postprocessor = ProxyWsPostprocessor::<C, P> {
             inner: shared.inner.clone(),
             metrics: shared.metrics.clone(),
+            proxy_name: shared.proxy_name,
             worker_id: id,
             _config: PhantomData,
         }
@@ -131,6 +132,7 @@ where
         config: C,
         tls: ConfigTls,
         metrics: Arc<Metrics>,
+        proxy_name: &'static str,
         canceller: tokio_util::sync::CancellationToken,
         resetter: broadcast::Sender<()>,
     ) -> Result<(), Box<dyn std::error::Error + Send>> {
@@ -140,7 +142,7 @@ where
             Ok(listener) => listener,
             Err(err) => {
                 error!(
-                    proxy = P::name(),
+                    proxy = proxy_name,
                     addr = %config.listen_address(),
                     error = ?err,
                     "Failed to initialise a socket"
@@ -151,13 +153,13 @@ where
 
         let workers_count = PARALLELISM.to_static();
 
-        let shared = ProxyWsSharedState::<C, P>::new(config, &metrics);
+        let shared = ProxyWsSharedState::<C, P>::new(config, &metrics, proxy_name);
         let client_connections_count = shared.client_connections_count.clone();
         let worker_canceller = canceller.clone();
         let worker_resetter = resetter.clone();
 
         info!(
-            proxy = P::name(),
+            proxy = proxy_name,
             listen_address = %listen_address,
             workers_count = workers_count,
             "Starting websocket-proxy...",
@@ -175,7 +177,7 @@ where
                 .wrap(NormalizePath::new(TrailingSlash::Trim))
                 .default_service(web::route().to(Self::receive))
         })
-        .on_connect(Self::on_connect(metrics, client_connections_count))
+        .on_connect(Self::on_connect(metrics.clone(), client_connections_count, proxy_name))
         .shutdown_signal(canceller.cancelled_owned())
         .workers(workers_count);
 
@@ -195,7 +197,7 @@ where
         } {
             Ok(server) => server,
             Err(err) => {
-                error!(proxy = P::name(), error = ?err, "Failed to initialise websocket-proxy");
+                error!(proxy = proxy_name, error = ?err, "Failed to initialise websocket-proxy");
                 return Err(Box::new(err));
             }
         }
@@ -205,16 +207,16 @@ where
         let mut resetter = resetter.subscribe();
         tokio::spawn(async move {
             if resetter.recv().await.is_ok() {
-                info!(proxy = P::name(), "Reset signal received, stopping websocket-proxy...");
+                info!(proxy = proxy_name, "Reset signal received, stopping websocket-proxy...");
                 handler.stop(true).await;
             }
         });
 
         if let Err(err) = proxy.await {
-            error!(proxy = P::name(), error = ?err, "Failure while running websocket-proxy")
+            error!(proxy = proxy_name, error = ?err, "Failure while running websocket-proxy")
         }
 
-        info!(proxy = P::name(), "Stopped websocket-proxy");
+        info!(proxy = proxy_name, "Stopped websocket-proxy");
 
         Ok(())
     }
@@ -253,7 +255,7 @@ where
             Ok(res) => res,
             Err(err) => {
                 error!(
-                    proxy = P::name(),
+                    proxy = this.shared.proxy_name,
                     request_id = %info.id(),
                     connection_id = %info.connection_id(),
                     worker_id = %this.id,
@@ -277,7 +279,7 @@ where
     ) {
         let bck_uri = this.backend.new_backend_uri(&info);
         trace!(
-            proxy = P::name(),
+            proxy = this.shared.proxy_name,
             request_id = %info.id(),
             connection_id = %info.connection_id(),
             worker_id = %this.id,
@@ -295,7 +297,7 @@ where
 
             Ok(Err(err)) => {
                 error!(
-                    proxy = P::name(),
+                    proxy = this.shared.proxy_name,
                     request_id = %info.id(),
                     connection_id = %info.connection_id(),
                     worker_id = %this.id,
@@ -311,7 +313,7 @@ where
                     .await
                 {
                     error!(
-                        proxy = P::name(),
+                        proxy = this.shared.proxy_name,
                         request_id = %info.id(),
                         connection_id = %info.connection_id(),
                         worker_id = %this.id,
@@ -324,7 +326,7 @@ where
 
             Err(_) => {
                 error!(
-                    proxy = P::name(),
+                    proxy = this.shared.proxy_name,
                     request_id = %info.id(),
                     connection_id = %info.connection_id(),
                     worker_id = %this.id,
@@ -339,7 +341,7 @@ where
                     .await
                 {
                     error!(
-                        proxy = P::name(),
+                        proxy = this.shared.proxy_name,
                         request_id = %info.id(),
                         connection_id = %info.connection_id(),
                         worker_id = %this.id,
@@ -365,7 +367,7 @@ where
         mut bck_rx: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
     ) {
         info!(
-            proxy = P::name(),
+            proxy = this.shared.proxy_name,
             connection_id = %info.connection_id(),
             worker_id = %this.id,
             "Starting websocket pump..."
@@ -424,7 +426,7 @@ where
             msg != WS_CLOSE_OK
         {
             debug!(
-                    proxy = P::name(),
+                    proxy = this.shared.proxy_name,
                     connection_id = %info.connection_id(),
                     worker_id = %this.id,
                     msg = %msg,
@@ -438,7 +440,7 @@ where
                 .await
             {
                 error!(
-                    proxy = P::name(),
+                    proxy = this.shared.proxy_name,
                     connection_id = %info.connection_id(),
                     worker_id = %this.id,
                     msg = %msg,
@@ -448,7 +450,7 @@ where
             }
 
             debug!(
-                    proxy = P::name(),
+                    proxy = this.shared.proxy_name,
                     connection_id = %info.connection_id(),
                     worker_id = %this.id,
                     msg = %msg,
@@ -462,7 +464,7 @@ where
                 .await
             {
                 error!(
-                    proxy = P::name(),
+                    proxy = this.shared.proxy_name,
                     connection_id = %info.connection_id(),
                     worker_id = %this.id,
                     msg = %msg,
@@ -472,7 +474,7 @@ where
             }
         } else {
             debug!(
-                    proxy = P::name(),
+                    proxy = this.shared.proxy_name,
                     connection_id = %info.connection_id(),
                     worker_id = %this.id,
                     "Closing client websocket session..."
@@ -485,7 +487,7 @@ where
                 .await
             {
                 error!(
-                    proxy = P::name(),
+                    proxy = this.shared.proxy_name,
                     connection_id = %info.connection_id(),
                     worker_id = %this.id,
                     error = ?err,
@@ -494,7 +496,7 @@ where
             }
 
             debug!(
-                    proxy = P::name(),
+                    proxy = this.shared.proxy_name,
                     connection_id = %info.connection_id(),
                     worker_id = %this.id,
                     "Closing backend websocket session..."
@@ -507,7 +509,7 @@ where
                 .await
             {
                 error!(
-                    proxy = P::name(),
+                    proxy = this.shared.proxy_name,
                     connection_id = %info.connection_id(),
                     worker_id = %this.id,
                     error = ?err,
@@ -517,7 +519,7 @@ where
         }
 
         info!(
-            proxy = P::name(),
+            proxy = this.shared.proxy_name,
             connection_id = %info.connection_id(),
             worker_id = %this.id,
             "Stopped websocket pump"
@@ -538,7 +540,7 @@ where
 
             if this.ping_balance_cli.load(Ordering::Relaxed) > ping_threshold {
                 error!(
-                    proxy = P::name(),
+                    proxy = this.shared.proxy_name,
                     connection_id = %info.connection_id(),
                     worker_id = %this.id,
                     "More than {} websocket pings sent to client didn't return, terminating the pump...", ping_threshold,
@@ -549,7 +551,7 @@ where
             let cli_ping = ProxyWsPing::new(info.connection_id());
             if let Err(err) = cli_tx.ping(&cli_ping.to_slice()).await {
                 error!(
-                    proxy = P::name(),
+                    proxy = this.shared.proxy_name,
                     connection_id = %info.connection_id(),
                     worker_id = %this.id,
                     error = ?err,
@@ -566,7 +568,7 @@ where
 
             if this.ping_balance_bck.load(Ordering::Relaxed) > ping_threshold {
                 error!(
-                    proxy = P::name(),
+                    proxy = this.shared.proxy_name,
                     connection_id = %info.connection_id(),
                     worker_id = %this.id,
                     "More than {} websocket pings sent to backend didn't return, terminating the pump...", ping_threshold,
@@ -577,7 +579,7 @@ where
             let bck_ping = ProxyWsPing::new(info.connection_id());
             if let Err(err) = bck_tx.send(tungstenite::Message::Ping(bck_ping.to_bytes())).await {
                 error!(
-                    proxy = P::name(),
+                    proxy = this.shared.proxy_name,
                     connection_id = %info.connection_id(),
                     worker_id = %this.id,
                     error = ?err,
@@ -608,7 +610,7 @@ where
                             bck_tx.send(tungstenite::Message::Binary(bytes.clone())).await
                         {
                             error!(
-                                proxy = P::name(),
+                                proxy = this.shared.proxy_name,
                                 connection_id = %info.connection_id(),
                                 worker_id = %this.id,
                                 error = ?err,
@@ -618,7 +620,7 @@ where
                                 .metrics
                                 .ws_proxy_failure_count
                                 .get_or_create(&LabelsProxyWs {
-                                    proxy: P::name(),
+                                    proxy: this.shared.proxy_name,
                                     destination: WS_LABEL_BACKEND,
                                 })
                                 .inc();
@@ -645,7 +647,7 @@ where
                             .await
                         {
                             error!(
-                                proxy = P::name(),
+                                proxy = this.shared.proxy_name,
                                 connection_id = %info.connection_id(),
                                 worker_id = %this.id,
                                 error = ?err,
@@ -655,7 +657,7 @@ where
                                 .metrics
                                 .ws_proxy_failure_count
                                 .get_or_create(&LabelsProxyWs {
-                                    proxy: P::name(),
+                                    proxy: this.shared.proxy_name,
                                     destination: WS_LABEL_BACKEND,
                                 })
                                 .inc();
@@ -674,7 +676,7 @@ where
                     actix_ws::Message::Ping(bytes) => {
                         if let Err(err) = cli_tx.pong(&bytes).await {
                             error!(
-                                proxy = P::name(),
+                                proxy = this.shared.proxy_name,
                                 connection_id = %info.connection_id(),
                                 worker_id = %this.id,
                                 error = ?err,
@@ -696,7 +698,7 @@ where
                                 .metrics
                                 .ws_latency_client
                                 .get_or_create(&LabelsProxyWs {
-                                    proxy: P::name(),
+                                    proxy: this.shared.proxy_name,
                                     destination: WS_LABEL_BACKEND,
                                 })
                                 .record(
@@ -706,7 +708,7 @@ where
                             return Ok(());
                         }
                         warn!(
-                            proxy = P::name(),
+                            proxy = this.shared.proxy_name,
                             connection_id = %info.connection_id(),
                             worker_id = %this.id,
                             "Unexpected websocket pong received from client",
@@ -728,7 +730,7 @@ where
                             .await
                         {
                             error!(
-                                proxy = P::name(),
+                                proxy = this.shared.proxy_name,
                                 connection_id = %info.connection_id(),
                                 worker_id = %this.id,
                                 error = ?err,
@@ -745,7 +747,7 @@ where
 
             Some(Err(err)) => {
                 error!(
-                    proxy = P::name(),
+                    proxy = this.shared.proxy_name,
                     connection_id = %info.connection_id(),
                     worker_id = %this.id,
                     error = ?err,
@@ -756,7 +758,7 @@ where
 
             None => {
                 info!(
-                    proxy = P::name(),
+                    proxy = this.shared.proxy_name,
                     connection_id = %info.connection_id(),
                     worker_id = %this.id,
                     "Client had closed websocket stream"
@@ -781,7 +783,7 @@ where
                     tungstenite::Message::Binary(bytes) => {
                         if let Err(err) = cli_tx.binary(bytes.clone()).await {
                             error!(
-                                proxy = P::name(),
+                                proxy = this.shared.proxy_name,
                                 connection_id = %info.connection_id(),
                                 worker_id = %this.id,
                                 error = ?err,
@@ -791,7 +793,7 @@ where
                                 .metrics
                                 .ws_proxy_failure_count
                                 .get_or_create(&LabelsProxyWs {
-                                    proxy: P::name(),
+                                    proxy: this.shared.proxy_name,
                                     destination: WS_LABEL_CLIENT,
                                 })
                                 .inc();
@@ -810,7 +812,7 @@ where
                     tungstenite::Message::Text(text) => {
                         if let Err(err) = cli_tx.text(text.clone().as_str()).await {
                             error!(
-                                proxy = P::name(),
+                                proxy = this.shared.proxy_name,
                                 connection_id = %info.connection_id(),
                                 worker_id = %this.id,
                                 error = ?err,
@@ -820,7 +822,7 @@ where
                                 .metrics
                                 .ws_proxy_failure_count
                                 .get_or_create(&LabelsProxyWs {
-                                    proxy: P::name(),
+                                    proxy: this.shared.proxy_name,
                                     destination: WS_LABEL_CLIENT,
                                 })
                                 .inc();
@@ -839,7 +841,7 @@ where
                     tungstenite::Message::Ping(bytes) => {
                         if let Err(err) = bck_tx.send(tungstenite::Message::Pong(bytes)).await {
                             error!(
-                                proxy = P::name(),
+                                proxy = this.shared.proxy_name,
                                 connection_id = %info.connection_id(),
                                 worker_id = %this.id,
                                 error = ?err,
@@ -861,7 +863,7 @@ where
                                 .metrics
                                 .ws_latency_backend
                                 .get_or_create(&LabelsProxyWs {
-                                    proxy: P::name(),
+                                    proxy: this.shared.proxy_name,
                                     destination: WS_LABEL_BACKEND,
                                 })
                                 .record(
@@ -871,7 +873,7 @@ where
                             return Ok(());
                         }
                         warn!(
-                            proxy = P::name(),
+                            proxy = this.shared.proxy_name,
                             connection_id = %info.connection_id(),
                             worker_id = %this.id,
                             "Unexpected websocket pong received from backend",
@@ -890,7 +892,7 @@ where
                             .await
                         {
                             error!(
-                                proxy = P::name(),
+                                proxy = this.shared.proxy_name,
                                 connection_id = %info.connection_id(),
                                 worker_id = %this.id,
                                 error = ?err,
@@ -907,7 +909,7 @@ where
 
             Some(Err(err)) => {
                 error!(
-                    proxy = P::name(),
+                    proxy = this.shared.proxy_name,
                     connection_id = %info.connection_id(),
                     worker_id = %this.id,
                     error = ?err,
@@ -918,7 +920,7 @@ where
 
             None => {
                 info!(
-                    proxy = P::name(),
+                    proxy = this.shared.proxy_name,
                     connection_id = %info.connection_id(),
                     worker_id = %this.id,
                     "Backend had closed websocket stream"
@@ -932,14 +934,20 @@ where
         msg: ProxyWsMessage,
         inner: Arc<P>,
         metrics: Arc<Metrics>,
+        proxy_name: &'static str,
         worker_id: Uuid,
     ) {
-        Self::maybe_log_proxied_message(&msg, inner.clone(), worker_id);
+        Self::maybe_log_proxied_message(&msg, inner.clone(), proxy_name, worker_id);
 
-        Self::emit_metrics_on_proxy_success(&msg, metrics.clone());
+        Self::emit_metrics_on_proxy_success(&msg, metrics.clone(), proxy_name);
     }
 
-    fn maybe_log_proxied_message(msg: &ProxyWsMessage, inner: Arc<P>, worker_id: Uuid) {
+    fn maybe_log_proxied_message(
+        msg: &ProxyWsMessage,
+        inner: Arc<P>,
+        proxy_name: &'static str,
+        worker_id: Uuid,
+    ) {
         let config = inner.config();
 
         match msg {
@@ -954,7 +962,7 @@ where
                 };
 
                 info!(
-                    proxy = P::name(),
+                    proxy = proxy_name,
                     connection_id = %info.connection_id(),
                     worker_id = %worker_id,
                     remote_addr = info.remote_addr(),
@@ -976,7 +984,7 @@ where
                 };
 
                 info!(
-                    proxy = P::name(),
+                    proxy = proxy_name,
                     connection_id = %info.connection_id(),
                     worker_id = %worker_id,
                     remote_addr = info.remote_addr(),
@@ -998,7 +1006,7 @@ where
                 };
 
                 info!(
-                    proxy = P::name(),
+                    proxy = proxy_name,
                     connection_id = %info.connection_id(),
                     worker_id = %worker_id,
                     remote_addr = info.remote_addr(),
@@ -1020,7 +1028,7 @@ where
                 };
 
                 info!(
-                    proxy = P::name(),
+                    proxy = proxy_name,
                     connection_id = %info.connection_id(),
                     worker_id = %worker_id,
                     remote_addr = info.remote_addr(),
@@ -1051,10 +1059,14 @@ where
         message
     }
 
-    fn emit_metrics_on_proxy_success(msg: &ProxyWsMessage, metrics: Arc<Metrics>) {
+    fn emit_metrics_on_proxy_success(
+        msg: &ProxyWsMessage,
+        metrics: Arc<Metrics>,
+        proxy_name: &'static str,
+    ) {
         match msg {
             ProxyWsMessage::BackendToClientBinary { msg, info: _, start, end } => {
-                let labels = LabelsProxyWs { proxy: P::name(), destination: WS_LABEL_CLIENT };
+                let labels = LabelsProxyWs { proxy: proxy_name, destination: WS_LABEL_CLIENT };
                 metrics
                     .ws_latency_proxy
                     .get_or_create(&labels)
@@ -1064,7 +1076,7 @@ where
             }
 
             ProxyWsMessage::BackendToClientText { msg, info: _, start, end } => {
-                let labels = LabelsProxyWs { proxy: P::name(), destination: WS_LABEL_CLIENT };
+                let labels = LabelsProxyWs { proxy: proxy_name, destination: WS_LABEL_CLIENT };
                 metrics
                     .ws_latency_proxy
                     .get_or_create(&labels)
@@ -1074,7 +1086,7 @@ where
             }
 
             ProxyWsMessage::ClientToBackendBinary { msg, info: _, start, end } => {
-                let labels = LabelsProxyWs { proxy: P::name(), destination: WS_LABEL_BACKEND };
+                let labels = LabelsProxyWs { proxy: proxy_name, destination: WS_LABEL_BACKEND };
                 metrics
                     .ws_latency_proxy
                     .get_or_create(&labels)
@@ -1084,7 +1096,7 @@ where
             }
 
             ProxyWsMessage::ClientToBackendText { msg, info: _, start, end } => {
-                let labels = LabelsProxyWs { proxy: P::name(), destination: WS_LABEL_BACKEND };
+                let labels = LabelsProxyWs { proxy: proxy_name, destination: WS_LABEL_BACKEND };
                 metrics
                     .ws_latency_proxy
                     .get_or_create(&labels)
@@ -1096,7 +1108,7 @@ where
     }
 }
 
-impl<C, P> Proxy<P> for ProxyWs<C, P>
+impl<C, P> Proxy for ProxyWs<C, P>
 where
     C: ConfigProxyWs,
     P: ProxyWsInner<C>,
@@ -1113,6 +1125,7 @@ where
 {
     inner: Arc<P>,
     metrics: Arc<Metrics>,
+    proxy_name: &'static str,
 
     client_connections_count: Arc<AtomicI64>,
 
@@ -1124,10 +1137,11 @@ where
     C: ConfigProxyWs,
     P: ProxyWsInner<C>,
 {
-    fn new(config: C, metrics: &Arc<Metrics>) -> Self {
+    fn new(config: C, metrics: &Arc<Metrics>, proxy_name: &'static str) -> Self {
         Self {
             inner: Arc::new(P::new(config)),
             metrics: metrics.clone(),
+            proxy_name,
             client_connections_count: Arc::new(AtomicI64::new(0)),
             _config: PhantomData,
         }
@@ -1147,7 +1161,7 @@ where
     P: ProxyWsInner<C>,
 {
     worker_id: Uuid,
-
+    proxy_name: &'static str,
     url: tungstenite::http::Uri,
 
     _config: PhantomData<C>,
@@ -1159,8 +1173,8 @@ where
     C: ConfigProxyWs,
     P: ProxyWsInner<C>,
 {
-    fn new(worker_id: Uuid, url: tungstenite::http::Uri) -> Self {
-        Self { worker_id, url, _config: PhantomData, _inner: PhantomData }
+    fn new(worker_id: Uuid, proxy_name: &'static str, url: tungstenite::http::Uri) -> Self {
+        Self { worker_id, proxy_name, url, _config: PhantomData, _inner: PhantomData }
     }
 
     fn new_backend_uri(&self, info: &ProxyHttpRequestInfo) -> tungstenite::http::Uri {
@@ -1168,7 +1182,7 @@ where
         let pq = tungstenite::http::uri::PathAndQuery::from_str(info.path_and_query())
             .inspect_err(|err| {
                 error!(
-                    proxy = P::name(),
+                    proxy = self.proxy_name,
                     request_id = %info.id(),
                     connection_id = %info.connection_id(),
                     worker_id = %self.worker_id,
@@ -1182,7 +1196,7 @@ where
         tungstenite::http::Uri::from_parts(parts)
             .inspect_err(|err| {
                 error!(
-                    proxy = P::name(),
+                    proxy = self.proxy_name,
                     request_id = %info.id(),
                     connection_id = %info.connection_id(),
                     worker_id = %self.worker_id,
@@ -1203,6 +1217,7 @@ where
     inner: Arc<P>,
     worker_id: Uuid,
     metrics: Arc<Metrics>,
+    proxy_name: &'static str,
 
     _config: PhantomData<C>,
 }
@@ -1229,11 +1244,12 @@ where
     fn handle(&mut self, msg: ProxyWsMessage, ctx: &mut Self::Context) -> Self::Result {
         let inner = self.inner.clone();
         let metrics = self.metrics.clone();
+        let proxy_name = self.proxy_name;
         let worker_id = self.worker_id;
 
         ctx.spawn(
             async move {
-                ProxyWs::<C, P>::finalise_proxying(msg, inner, metrics, worker_id);
+                ProxyWs::<C, P>::finalise_proxying(msg, inner, metrics, proxy_name, worker_id);
             }
             .into_actor(self),
         );

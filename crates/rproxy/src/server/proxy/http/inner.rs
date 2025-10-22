@@ -1,15 +1,11 @@
 use crate::{
     jrpc::JrpcRequestMetaMaybeBatch,
-    server::proxy::{
-        ProxyInner,
-        http::{ProxiedHttpRequest, ProxiedHttpResponse, config::ConfigProxyHttp},
-    },
+    server::proxy::http::{ProxiedHttpRequest, ProxiedHttpResponse, config::ConfigProxyHttp},
 };
 
 // ProxyHttpInner ------------------------------------------------------
 
-pub(crate) trait ProxyHttpInner<C>:
-    ProxyInner + Clone + Send + Sized + Sync + 'static
+pub(crate) trait ProxyHttpInner<C>: Clone + Send + Sized + Sync + 'static
 where
     C: ConfigProxyHttp,
 {

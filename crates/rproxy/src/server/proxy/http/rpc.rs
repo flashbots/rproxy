@@ -3,26 +3,16 @@ use tracing::warn;
 use crate::{
     jrpc::{JrpcError, JrpcRequestMeta, JrpcRequestMetaMaybeBatch, JrpcResponseMeta},
     server::proxy::{
-        ProxyInner,
         config::ConfigRpc,
         http::{ProxiedHttpRequest, ProxiedHttpResponse, ProxyHttpInner},
     },
 };
-
-const PROXY_HTTP_INNER_RPC_NAME: &str = "rproxy-rpc";
 
 // ProxyHttpInnerRpc ---------------------------------------------------
 
 #[derive(Clone)]
 pub(crate) struct ProxyHttpInnerRpc {
     config: ConfigRpc,
-}
-
-impl ProxyInner for ProxyHttpInnerRpc {
-    #[inline]
-    fn name() -> &'static str {
-        PROXY_HTTP_INNER_RPC_NAME
-    }
 }
 
 impl ProxyHttpInner<ConfigRpc> for ProxyHttpInnerRpc {
@@ -54,20 +44,20 @@ impl ProxyHttpInner<ConfigRpc> for ProxyHttpInnerRpc {
 
         match jrpc_req {
             JrpcRequestMetaMaybeBatch::Single(jrpc_req_single) => {
-                let jrpc_res_single = match serde_json::from_slice::<JrpcResponseMeta>(
-                    &http_res.decompressed_body(),
-                ) {
-                    Ok(jrpc_response) => jrpc_response,
-                    Err(err) => {
-                        warn!(proxy = Self::name(), error = ?err, "Failed to parse json-rpc response");
+                let jrpc_res_single =
+                    match serde_json::from_slice::<JrpcResponseMeta>(&http_res.decompressed_body())
+                    {
+                        Ok(jrpc_response) => jrpc_response,
+                        Err(err) => {
+                            warn!(error = ?err, "Failed to parse json-rpc response");
 
-                        return should_mirror(
-                            jrpc_req_single,
-                            &JrpcResponseMeta { error: Some(JrpcError {}) },
-                            self.config.mirror_errored_requests,
-                        );
-                    }
-                };
+                            return should_mirror(
+                                jrpc_req_single,
+                                &JrpcResponseMeta { error: Some(JrpcError {}) },
+                                self.config.mirror_errored_requests,
+                            );
+                        }
+                    };
 
                 should_mirror(
                     jrpc_req_single,
@@ -82,14 +72,13 @@ impl ProxyHttpInner<ConfigRpc> for ProxyHttpInnerRpc {
                 ) {
                     Ok(jrpc_response) => jrpc_response,
                     Err(err) => {
-                        warn!(proxy = Self::name(), error = ?err, "Failed to parse json-rpc response");
+                        warn!(error = ?err, "Failed to parse json-rpc response");
                         vec![JrpcResponseMeta { error: Some(JrpcError {}) }; jrpc_req_batch.len()]
                     }
                 };
 
                 if jrpc_res_batch.len() != jrpc_req_batch.len() {
                     warn!(
-                        proxy = Self::name(),
                         "A response to jrpc-batch has mismatching count of objects (want: {}, got: {})",
                         jrpc_req_batch.len(),
                         jrpc_res_batch.len(),

@@ -90,7 +90,7 @@ where
     fn new(shared: ProxyHttpSharedState<C, P>, connections_limit: usize) -> Self {
         let id = Uuid::now_v7();
 
-        debug!(proxy = P::name(), worker_id = %id, "Creating http-proxy worker...");
+        debug!(proxy = shared.proxy_name, worker_id = %id, "Creating http-proxy worker...");
 
         let config = shared.config();
         let inner = shared.inner();
@@ -99,6 +99,7 @@ where
             inner.clone(),
             id,
             shared.metrics.clone(),
+            shared.proxy_name,
             config.backend_url(),
             connections_limit,
             config.backend_timeout(),
@@ -113,6 +114,7 @@ where
                         shared.inner(),
                         id,
                         shared.metrics.clone(),
+                        shared.proxy_name,
                         peer_url.to_owned(),
                         config.backend_max_concurrent_requests(),
                         config.backend_timeout(),
@@ -126,6 +128,7 @@ where
             worker_id: id,
             inner: inner.clone(),
             metrics: shared.metrics.clone(),
+            proxy_name: shared.proxy_name,
             mirroring_peers: peers.clone(),
             mirroring_peer_round_robin_index: AtomicUsize::new(0),
         }
@@ -138,6 +141,7 @@ where
         config: C,
         tls: ConfigTls,
         metrics: Arc<Metrics>,
+        proxy_name: &'static str,
         canceller: tokio_util::sync::CancellationToken,
         resetter: broadcast::Sender<()>,
     ) -> Result<(), Box<dyn std::error::Error + Send>> {
@@ -147,7 +151,7 @@ where
             Ok(listener) => listener,
             Err(err) => {
                 error!(
-                    proxy = P::name(),
+                    proxy = proxy_name,
                     addr = %config.listen_address(),
                     error = ?err,
                     "Failed to initialise a socket"
@@ -171,11 +175,11 @@ where
             );
         }
 
-        let shared = ProxyHttpSharedState::<C, P>::new(config, &metrics);
+        let shared = ProxyHttpSharedState::<C, P>::new(config, &metrics, proxy_name);
         let client_connections_count = shared.client_connections_count.clone();
 
         info!(
-            proxy = P::name(),
+            proxy = proxy_name,
             listen_address = %listen_address,
             workers_count = workers_count,
             max_concurrent_requests_per_worker = max_concurrent_requests_per_worker,
@@ -191,7 +195,7 @@ where
                 .wrap(NormalizePath::new(TrailingSlash::Trim))
                 .default_service(web::route().to(Self::receive))
         })
-        .on_connect(Self::on_connect(metrics, client_connections_count))
+        .on_connect(Self::on_connect(metrics.clone(), client_connections_count, proxy_name))
         .shutdown_signal(canceller.cancelled_owned())
         .workers(workers_count);
 
@@ -212,7 +216,7 @@ where
             Ok(server) => server,
             Err(err) => {
                 error!(
-                    proxy = P::name(),
+                    proxy = proxy_name,
                     error = ?err,
                     "Failed to initialise http-proxy",
                 );
@@ -225,16 +229,16 @@ where
         let mut resetter = resetter.subscribe();
         tokio::spawn(async move {
             if resetter.recv().await.is_ok() {
-                info!(proxy = P::name(), "Reset signal received, stopping http-proxy...");
+                info!(proxy = proxy_name, "Reset signal received, stopping http-proxy...");
                 handler.stop(true).await;
             }
         });
 
         if let Err(err) = server.await {
-            error!(proxy = P::name(), error = ?err, "Failure while running http-proxy")
+            error!(proxy = proxy_name, error = ?err, "Failure while running http-proxy")
         }
 
-        info!(proxy = P::name(), "Stopped http-proxy");
+        info!(proxy = proxy_name, "Stopped http-proxy");
 
         Ok(())
     }
@@ -307,7 +311,7 @@ where
                 .metrics
                 .client_info
                 .get_or_create(&LabelsProxyClientInfo {
-                    proxy: P::name(),
+                    proxy: this.shared.proxy_name,
                     user_agent: user_agent.to_string(),
                 })
                 .inc();
@@ -325,7 +329,7 @@ where
             Ok(res) => res,
             Err(err) => {
                 warn!(
-                    proxy = P::name(),
+                    proxy = this.shared.proxy_name,
                     request_id = %id,
                     connection_id = %connection_id,
                     worker_id = %this.id,
@@ -336,7 +340,7 @@ where
                 this.shared
                     .metrics
                     .http_proxy_failure_count
-                    .get_or_create(&LabelsProxy { proxy: P::name() })
+                    .get_or_create(&LabelsProxy { proxy: this.shared.proxy_name })
                     .inc();
                 return Ok(HttpResponse::BadGateway().body(format!("Backend error: {:?}", err)));
             }
@@ -364,7 +368,7 @@ where
 
         if self.requests.insert_sync(id, req).is_err() {
             error!(
-                proxy = P::name(),
+                proxy = self.shared.proxy_name,
                 request_id = %id,
                 connection_id = %connection_id,
                 worker_id = %self.id,
@@ -378,7 +382,7 @@ where
             Some((_, req)) => req,
             None => {
                 error!(
-                    proxy = P::name(),
+                    proxy = self.shared.proxy_name,
                     request_id = %bck_res.info.id,
                     worker_id = %self.id,
                     "Proxied http response for unmatching request",
@@ -392,12 +396,14 @@ where
         self.postprocessor.do_send(ProxiedHttpCombo { req: cli_req, res: bck_res });
     }
 
+    #[expect(clippy::too_many_arguments)]
     fn finalise_proxying(
         mut cli_req: ProxiedHttpRequest,
         mut bck_res: ProxiedHttpResponse,
         inner: Arc<P>,
         worker_id: Uuid,
         metrics: Arc<Metrics>,
+        proxy_name: &'static str,
         mirroring_peers: Arc<Vec<actix::Addr<ProxyHttpBackendEndpoint<C, P>>>>,
         mut mirroring_peer_round_robin_index: usize,
     ) {
@@ -438,15 +444,22 @@ where
                     &cli_req,
                     &bck_res,
                     inner.clone(),
+                    proxy_name,
                     worker_id,
                 );
 
-                Self::emit_metrics_on_proxy_success(&jrpc, &cli_req, &bck_res, metrics.clone());
+                Self::emit_metrics_on_proxy_success(
+                    &jrpc,
+                    &cli_req,
+                    &bck_res,
+                    metrics.clone(),
+                    proxy_name,
+                );
             }
 
             Err(err) => {
                 warn!(
-                    proxy = P::name(),
+                    proxy = proxy_name,
                     request_id = %cli_req.info.id,
                     connection_id = %cli_req.info.connection_id,
                     worker_id = %worker_id,
@@ -462,6 +475,7 @@ where
         mut mrr_res: ProxiedHttpResponse,
         inner: Arc<P>,
         metrics: Arc<Metrics>,
+        proxy_name: &'static str,
         worker_id: Uuid,
     ) {
         if cli_req.decompressed_size < cli_req.size {
@@ -474,12 +488,12 @@ where
                 decompress(mrr_res.body.clone(), mrr_res.size, mrr_res.info.content_encoding());
         }
 
-        Self::maybe_log_mirrored_request(&cli_req, &mrr_res, worker_id, inner.config());
+        Self::maybe_log_mirrored_request(&cli_req, &mrr_res, proxy_name, worker_id, inner.config());
 
         metrics
             .http_mirror_success_count
             .get_or_create(&LabelsProxyHttpJrpc {
-                proxy: P::name(),
+                proxy: proxy_name,
                 jrpc_method: cli_req.info.jrpc_method_enriched,
             })
             .inc();
@@ -490,6 +504,7 @@ where
         req: &ProxiedHttpRequest,
         res: &ProxiedHttpResponse,
         inner: Arc<P>,
+        proxy_name: &'static str,
         worker_id: Uuid,
     ) {
         let config = inner.config();
@@ -513,7 +528,7 @@ where
         };
 
         info!(
-            proxy = P::name(),
+            proxy = proxy_name,
             request_id = %req.info.id,
             connection_id = %req.info.connection_id,
             worker_id = %worker_id,
@@ -532,6 +547,7 @@ where
     fn maybe_log_mirrored_request(
         req: &ProxiedHttpRequest,
         res: &ProxiedHttpResponse,
+        proxy_name: &'static str,
         worker_id: Uuid,
         config: &C,
     ) {
@@ -554,7 +570,7 @@ where
         };
 
         info!(
-            proxy = P::name(),
+            proxy = proxy_name,
             request_id = %req.info.id,
             connection_id = %req.info.connection_id,
             worker_id = %worker_id,
@@ -723,14 +739,15 @@ where
         req: &ProxiedHttpRequest,
         res: &ProxiedHttpResponse,
         metrics: Arc<Metrics>,
+        proxy_name: &'static str,
     ) {
         let metric_labels_jrpc = match jrpc {
             JrpcRequestMetaMaybeBatch::Single(jrpc) => {
-                LabelsProxyHttpJrpc { jrpc_method: jrpc.method_enriched(), proxy: P::name() }
+                LabelsProxyHttpJrpc { jrpc_method: jrpc.method_enriched(), proxy: proxy_name }
             }
 
             JrpcRequestMetaMaybeBatch::Batch(_) => {
-                LabelsProxyHttpJrpc { jrpc_method: Cow::Borrowed("batch"), proxy: P::name() }
+                LabelsProxyHttpJrpc { jrpc_method: Cow::Borrowed("batch"), proxy: proxy_name }
             }
         };
 
@@ -765,7 +782,7 @@ where
                 for jrpc in batch.iter() {
                     let metric_labels_jrpc = LabelsProxyHttpJrpc {
                         jrpc_method: jrpc.method_enriched(),
-                        proxy: P::name(),
+                        proxy: proxy_name,
                     };
                     metrics.http_proxy_success_count.get_or_create(&metric_labels_jrpc).inc();
                 }
@@ -792,7 +809,7 @@ where
     }
 }
 
-impl<C, P> Proxy<P> for ProxyHttp<C, P>
+impl<C, P> Proxy for ProxyHttp<C, P>
 where
     C: ConfigProxyHttp,
     P: ProxyHttpInner<C>,
@@ -806,7 +823,7 @@ where
 {
     fn drop(&mut self) {
         debug!(
-            proxy = P::name(),
+            proxy = self.shared.proxy_name,
             worker_id = %self.id,
             "Destroying http-proxy worker...",
         );
@@ -823,6 +840,7 @@ where
 {
     inner: Arc<P>,
     metrics: Arc<Metrics>,
+    proxy_name: &'static str,
 
     client_connections_count: Arc<AtomicI64>,
 
@@ -834,10 +852,11 @@ where
     C: ConfigProxyHttp,
     P: ProxyHttpInner<C>,
 {
-    fn new(config: C, metrics: &Arc<Metrics>) -> Self {
+    fn new(config: C, metrics: &Arc<Metrics>, proxy_name: &'static str) -> Self {
         Self {
             inner: Arc::new(P::new(config)),
             metrics: metrics.clone(),
+            proxy_name,
             client_connections_count: Arc::new(AtomicI64::new(0)),
             _config: PhantomData,
         }
@@ -864,6 +883,7 @@ where
     inner: Arc<P>,
     worker_id: Uuid,
     metrics: Arc<Metrics>,
+    proxy_name: &'static str,
 
     /// mirroring_peers is the vector of endpoints for mirroring peers.
     mirroring_peers: Arc<Vec<actix::Addr<ProxyHttpBackendEndpoint<C, P>>>>,
@@ -896,6 +916,7 @@ where
     fn handle(&mut self, msg: ProxiedHttpCombo, ctx: &mut Self::Context) -> Self::Result {
         let inner = self.inner.clone();
         let metrics = self.metrics.clone();
+        let proxy_name = self.proxy_name;
         let worker_id = self.worker_id;
         let mirroring_peers = self.mirroring_peers.clone();
         let mut mirroring_peer_round_robin_index =
@@ -909,6 +930,7 @@ where
                     inner,
                     worker_id,
                     metrics,
+                    proxy_name,
                     mirroring_peers,
                     mirroring_peer_round_robin_index,
                 );
@@ -935,6 +957,7 @@ where
     inner: Arc<P>,
     worker_id: Uuid,
     metrics: Arc<Metrics>,
+    proxy_name: &'static str,
 
     client: Client,
     url: Url,
@@ -951,6 +974,7 @@ where
         inner: Arc<P>,
         worker_id: Uuid,
         metrics: Arc<Metrics>,
+        proxy_name: &'static str,
         url: Url,
         connections_limit: usize,
         timeout: std::time::Duration,
@@ -966,7 +990,7 @@ where
             .timeout(timeout)
             .finish();
 
-        Self { inner, worker_id, metrics, client, url, _config: PhantomData }
+        Self { inner, worker_id, metrics, proxy_name, client, url, _config: PhantomData }
     }
 
     fn new_backend_request(&self, info: &ProxyHttpRequestInfo) -> ClientRequest {
@@ -1008,6 +1032,7 @@ where
         let inner = self.inner.clone();
         let worker_id = self.worker_id;
         let metrics = self.metrics.clone();
+        let proxy_name = self.proxy_name;
 
         let mrr_req = self.new_backend_request(&cli_req.info);
         let mrr_req_body = cli_req.body.clone();
@@ -1040,12 +1065,12 @@ where
                                     end,
                                 };
                                 ProxyHttp::<C, P>::postprocess_mirrored_response(
-                                    cli_req, mrr_res, inner, metrics, worker_id,
+                                    cli_req, mrr_res, inner, metrics, proxy_name, worker_id,
                                 );
                             }
                             Err(err) => {
                                 warn!(
-                                    proxy = P::name(),
+                                    proxy = proxy_name,
                                     request_id = %cli_req.info.id,
                                     connection_id = %cli_req.info.connection_id,
                                     error = ?err,
@@ -1053,7 +1078,7 @@ where
                                 );
                                 metrics
                                     .http_mirror_failure_count
-                                    .get_or_create(&LabelsProxy { proxy: P::name() })
+                                    .get_or_create(&LabelsProxy { proxy: proxy_name })
                                     .inc();
                             }
                         };
@@ -1061,7 +1086,7 @@ where
 
                     Err(err) => {
                         warn!(
-                            proxy = P::name(),
+                            proxy = proxy_name,
                             request_id = %cli_req.info.id,
                             connection_id = %cli_req.info.connection_id,
                             error = ?err,
@@ -1069,7 +1094,7 @@ where
                         );
                         metrics
                             .http_mirror_failure_count
-                            .get_or_create(&LabelsProxy { proxy: P::name() })
+                            .get_or_create(&LabelsProxy { proxy: proxy_name })
                             .inc();
                     }
                 }
@@ -1287,7 +1312,7 @@ where
             Poll::Ready(Some(Err(err))) => {
                 if let Some(info) = mem::take(this.info) {
                     warn!(
-                        proxy = P::name(),
+                        proxy = this.proxy.shared.proxy_name,
                         request_id = %info.id(),
                         connection_id = %info.connection_id(),
                         error = ?err,
@@ -1295,7 +1320,7 @@ where
                     );
                 } else {
                     warn!(
-                        proxy = P::name(),
+                        proxy = this.proxy.shared.proxy_name,
                         error = ?err,
                         request_id = "unknown",
                         "Proxy http request stream error",
@@ -1385,14 +1410,14 @@ where
             Poll::Ready(Some(Err(err))) => {
                 if let Some(info) = mem::take(this.info) {
                     warn!(
-                        proxy = P::name(),
+                        proxy = this.proxy.shared.proxy_name,
                         request_id = %info.id(),
                         error = ?err,
                         "Proxy http response stream error",
                     );
                 } else {
                     warn!(
-                        proxy = P::name(),
+                        proxy = this.proxy.shared.proxy_name,
                         error = ?err,
                         request_id = "unknown",
                         "Proxy http response stream error",

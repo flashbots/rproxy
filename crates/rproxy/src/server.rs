@@ -20,7 +20,6 @@ use crate::{
     server::{
         metrics::Metrics,
         proxy::{
-            ProxyInner,
             circuit_breaker::CircuitBreaker,
             config::{ConfigAuthrpc, ConfigFlashblocks, ConfigRpc},
             http::{ProxyHttp, ProxyHttpInnerAuthrpc, ProxyHttpInnerRpc},
@@ -102,13 +101,14 @@ impl Server {
                         config,
                         tls,
                         metrics,
+                        "rproxy-authrpc",
                         canceller.clone(),
                         resetter,
                     )
                     .await
                     .inspect_err(|err| {
                         error!(
-                            proxy = ProxyHttpInnerRpc::name(),
+                            proxy = "rproxy-authrpc",
                             error = ?err,
                             "Failed to start http-proxy, terminating...",
                         );
@@ -130,13 +130,14 @@ impl Server {
                         config,
                         tls,
                         metrics,
+                        "rproxy-rpc",
                         canceller.clone(),
                         resetter,
                     )
                     .await
                     .inspect_err(|err| {
                         error!(
-                            proxy = ProxyHttpInnerRpc::name(),
+                            proxy = "rproxy-rpc",
                             error = ?err,
                             "Failed to start http-proxy, terminating...",
                         );
@@ -158,13 +159,14 @@ impl Server {
                         config,
                         tls,
                         metrics,
+                        "rproxy-flashblocks",
                         canceller.clone(),
                         resetter,
                     )
                     .await
                     .inspect_err(|err| {
                         error!(
-                            proxy = ProxyHttpInnerRpc::name(),
+                            proxy = "rproxy-flashblocks",
                             error = ?err,
                             "Failed to start websocket-proxy, terminating...",
                         );
