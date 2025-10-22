@@ -4,7 +4,7 @@ use bytes::Bytes;
 
 // decompress ----------------------------------------------------------
 
-pub fn decompress(body: Bytes, size: usize, content_encoding: String) -> (Bytes, usize) {
+pub(crate) fn decompress(body: Bytes, size: usize, content_encoding: String) -> (Bytes, usize) {
     match content_encoding.to_ascii_lowercase().as_str() {
         "br" => {
             let mut decoder = brotli::Decompressor::new(std::io::Cursor::new(body.clone()), 4096);

@@ -3,7 +3,7 @@ use hex::FromHex;
 
 // raw_transaction_to_hash ---------------------------------------------
 
-pub fn raw_transaction_to_hash(transaction: &mut serde_json::Value) {
+pub(crate) fn raw_transaction_to_hash(transaction: &mut serde_json::Value) {
     let hex = match transaction.as_str() {
         Some(hex) => hex,
         None => return,

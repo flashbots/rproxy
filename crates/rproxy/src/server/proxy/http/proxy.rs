@@ -1187,12 +1187,12 @@ impl ProxyHttpRequestInfo {
     }
 
     #[inline]
-    pub fn path_and_query(&self) -> &str {
+    pub(crate) fn path_and_query(&self) -> &str {
         &self.path_and_query
     }
 
     #[inline]
-    pub fn remote_addr(&self) -> &Option<String> {
+    pub(crate) fn remote_addr(&self) -> &Option<String> {
         &self.remote_addr
     }
 }
