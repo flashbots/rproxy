@@ -1,17 +1,10 @@
-use crate::server::proxy::{ProxyInner, config::ConfigFlashblocks, ws::ProxyWsInner};
-const PROXY_WS_FLASHBLOCKS_RPC_NAME: &str = "rproxy-flashblocks";
+use crate::server::proxy::{config::ConfigFlashblocks, ws::ProxyWsInner};
 
 // ProxyWsInnerFlashblocks ---------------------------------------------
 
 #[derive(Clone)]
 pub(crate) struct ProxyWsInnerFlashblocks {
     config: ConfigFlashblocks,
-}
-
-impl ProxyInner for ProxyWsInnerFlashblocks {
-    fn name() -> &'static str {
-        PROXY_WS_FLASHBLOCKS_RPC_NAME
-    }
 }
 
 impl ProxyWsInner<ConfigFlashblocks> for ProxyWsInnerFlashblocks {

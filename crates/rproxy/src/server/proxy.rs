@@ -21,18 +21,16 @@ use crate::server::metrics::{LabelsProxy, Metrics};
 
 // Proxy ---------------------------------------------------------------
 
-pub(crate) trait Proxy<P>
-where
-    P: ProxyInner,
-{
+pub(crate) trait Proxy {
     fn on_connect(
         metrics: Arc<Metrics>,
         client_connections_count: Arc<AtomicI64>,
+        proxy_name: String,
     ) -> impl Fn(&dyn Any, &mut Extensions) {
         move |connection, extensions| {
             {
                 let val = client_connections_count.fetch_add(1, Ordering::Relaxed) + 1;
-                let metric_labels = LabelsProxy { proxy: P::name() };
+                let metric_labels = LabelsProxy { proxy: proxy_name.clone() };
 
                 metrics.client_connections_active_count.get_or_create(&metric_labels).set(val);
                 metrics.client_connections_established_count.get_or_create(&metric_labels).inc();
@@ -76,7 +74,7 @@ where
 
                 extensions.insert(ProxyConnectionGuard::new(
                     id,
-                    P::name(),
+                    &proxy_name,
                     remote_addr,
                     local_addr,
                     &metrics,
@@ -87,12 +85,6 @@ where
     }
 }
 
-// ProxyInner ----------------------------------------------------------
-
-pub(crate) trait ProxyInner: 'static {
-    fn name() -> &'static str;
-}
-
 // ProxyConnectionGuard ------------------------------------------------
 
 pub struct ProxyConnectionGuard {
@@ -100,7 +92,7 @@ pub struct ProxyConnectionGuard {
     pub remote_addr: Option<String>,
     pub local_addr: Option<String>,
 
-    proxy_name: &'static str,
+    proxy_name: String,
     metrics: Arc<Metrics>,
     client_connections_count: Arc<AtomicI64>,
 }
@@ -108,7 +100,7 @@ pub struct ProxyConnectionGuard {
 impl ProxyConnectionGuard {
     fn new(
         id: Uuid,
-        proxy_name: &'static str,
+        proxy_name: &str,
         remote_addr: Option<String>,
         local_addr: Option<String>,
         metrics: &Arc<Metrics>,
@@ -118,7 +110,7 @@ impl ProxyConnectionGuard {
             id,
             remote_addr,
             local_addr,
-            proxy_name,
+            proxy_name: proxy_name.to_string(),
             metrics: metrics.clone(),
             client_connections_count,
         }
@@ -129,7 +121,7 @@ impl Drop for ProxyConnectionGuard {
     fn drop(&mut self) {
         let val = self.client_connections_count.fetch_sub(1, Ordering::Relaxed) - 1;
 
-        let metric_labels = LabelsProxy { proxy: self.proxy_name };
+        let metric_labels = LabelsProxy { proxy: self.proxy_name.clone() };
 
         self.metrics.client_connections_active_count.get_or_create(&metric_labels).set(val);
         self.metrics.client_connections_closed_count.get_or_create(&metric_labels).inc();

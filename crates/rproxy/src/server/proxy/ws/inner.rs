@@ -1,8 +1,8 @@
-use crate::server::proxy::{ProxyInner, ws::config::ConfigProxyWs};
+use crate::server::proxy::ws::config::ConfigProxyWs;
 
 // ProxyWsInner --------------------------------------------------------
 
-pub(crate) trait ProxyWsInner<C>: ProxyInner + Clone + Send + Sync
+pub(crate) trait ProxyWsInner<C>: Clone + Send + Sync + 'static
 where
     C: ConfigProxyWs,
 {
