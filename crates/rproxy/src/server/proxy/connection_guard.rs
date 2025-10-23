@@ -30,7 +30,7 @@ impl ConnectionGuard {
         proxy: &'static str,
         remote_addr: Option<String>,
         local_addr: Option<String>,
-        metrics: &Arc<Metrics>,
+        metrics: Arc<Metrics>,
         client_connections_count: Arc<AtomicI64>,
     ) -> Self {
         Self {
@@ -98,7 +98,7 @@ impl ConnectionGuard {
                     proxy,
                     remote_addr,
                     local_addr,
-                    &metrics,
+                    metrics.clone(),
                     client_connections_count.clone(),
                 ));
             }
