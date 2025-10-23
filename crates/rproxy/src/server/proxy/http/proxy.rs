@@ -314,8 +314,8 @@ where
 
         let info = ProxyHttpRequestInfo::new(&clnt_req, clnt_req.conn_data::<ConnectionGuard>());
 
-        let id = info.id;
-        let connection_id = info.connection_id;
+        let req_id = info.req_id;
+        let conn_id = info.conn_id;
 
         let bknd_req = this.backend.new_backend_request(&info);
         let bknd_req_body = ProxyHttpRequestBody::new(
@@ -331,8 +331,8 @@ where
             Err(err) => {
                 warn!(
                     proxy = P::name(),
-                    request_id = %id,
-                    connection_id = %connection_id,
+                    request_id = %req_id,
+                    connection_id = %conn_id,
                     worker_id = %this.id,
                     backend_url = %this.backend.url,
                     error = ?err,
@@ -354,7 +354,8 @@ where
         let preallocate = this.shared.config().prealloacated_response_buffer_size();
         let bknd_res_body = ProxyHttpResponseBody::new(
             this,
-            id,
+            req_id,
+            conn_id,
             status,
             bknd_res.headers().clone(),
             bknd_res.into_stream(),
@@ -366,14 +367,14 @@ where
     }
 
     fn postprocess_client_request(&self, req: ProxiedHttpRequest) {
-        let id = req.info.id;
-        let connection_id = req.info.connection_id;
+        let id = req.info.req_id;
+        let conn_id = req.info.conn_id;
 
         if self.requests.insert_sync(id, req).is_err() {
             error!(
                 proxy = P::name(),
                 request_id = %id,
-                connection_id = %connection_id,
+                connection_id = %conn_id,
                 worker_id = %self.id,
                 "Duplicate request id",
             );
@@ -381,10 +382,11 @@ where
     }
 
     fn postprocess_backend_response(&self, bknd_res: ProxiedHttpResponse) {
-        let Some((_, clnt_req)) = self.requests.remove_sync(&bknd_res.info.id) else {
+        let Some((_, clnt_req)) = self.requests.remove_sync(&bknd_res.info.req_id) else {
             error!(
                 proxy = P::name(),
-                request_id = %bknd_res.info.id,
+                request_id = %bknd_res.info.req_id,
+                connection_id = %bknd_res.info.conn_id,
                 worker_id = %self.id,
                 "Proxied http response for unmatching request",
             );
@@ -451,8 +453,8 @@ where
             Err(err) => {
                 warn!(
                     proxy = P::name(),
-                    request_id = %clnt_req.info.id,
-                    connection_id = %clnt_req.info.connection_id,
+                    request_id = %clnt_req.info.req_id,
+                    connection_id = %clnt_req.info.conn_id,
                     worker_id = %worker_id,
                     error = ?err,
                     "Failed to parse json-rpc request",
@@ -518,8 +520,8 @@ where
 
         info!(
             proxy = P::name(),
-            request_id = %req.info.id,
-            connection_id = %req.info.connection_id,
+            request_id = %req.info.req_id,
+            connection_id = %req.info.conn_id,
             worker_id = %worker_id,
             jrpc_method = %jrpc.method_enriched(),
             http_status = res.status(),
@@ -559,8 +561,8 @@ where
 
         info!(
             proxy = P::name(),
-            request_id = %req.info.id,
-            connection_id = %req.info.connection_id,
+            request_id = %req.info.req_id,
+            connection_id = %req.info.conn_id,
             worker_id = %worker_id,
             jrpc_method = %req.info.jrpc_method_enriched,
             http_status = res.status(),
@@ -1001,7 +1003,8 @@ where
                                     BodySize::None | BodySize::Stream => 0,
                                 };
                                 let info = ProxyHttpResponseInfo::new(
-                                    clnt_req.info.id,
+                                    clnt_req.info.req_id,
+                                    clnt_req.info.conn_id,
                                     bknd_res.status(),
                                     bknd_res.headers().clone(),
                                 );
@@ -1021,8 +1024,8 @@ where
                             Err(err) => {
                                 warn!(
                                     proxy = P::name(),
-                                    request_id = %clnt_req.info.id,
-                                    connection_id = %clnt_req.info.connection_id,
+                                    request_id = %clnt_req.info.req_id,
+                                    connection_id = %clnt_req.info.conn_id,
                                     error = ?err,
                                     "Failed to mirror a request",
                                 );
@@ -1037,8 +1040,8 @@ where
                     Err(err) => {
                         warn!(
                             proxy = P::name(),
-                            request_id = %clnt_req.info.id,
-                            connection_id = %clnt_req.info.connection_id,
+                            request_id = %clnt_req.info.req_id,
+                            connection_id = %clnt_req.info.conn_id,
                             error = ?err,
                             "Failed to mirror a request",
                         );
@@ -1058,8 +1061,8 @@ where
 
 #[derive(Clone)]
 pub(crate) struct ProxyHttpRequestInfo {
-    id: Uuid,
-    connection_id: Uuid,
+    req_id: Uuid,
+    conn_id: Uuid,
     remote_addr: Option<String>,
     method: Method,
     path: String,
@@ -1131,8 +1134,8 @@ impl ProxyHttpRequestInfo {
         };
 
         Self {
-            id: Uuid::now_v7(),
-            connection_id: Uuid::now_v7(),
+            req_id: Uuid::now_v7(),
+            conn_id: Uuid::now_v7(),
             remote_addr,
             method: req.method().clone(),
             path,
@@ -1144,12 +1147,12 @@ impl ProxyHttpRequestInfo {
 
     #[inline]
     pub(crate) fn id(&self) -> Uuid {
-        self.id
+        self.req_id
     }
 
     #[inline]
-    pub(crate) fn connection_id(&self) -> Uuid {
-        self.connection_id
+    pub(crate) fn conn_id(&self) -> Uuid {
+        self.conn_id
     }
 
     #[inline]
@@ -1176,19 +1179,25 @@ impl ProxyHttpRequestInfo {
 
 #[derive(Clone)]
 pub(crate) struct ProxyHttpResponseInfo {
-    id: Uuid,
+    req_id: Uuid,
+    conn_id: Uuid,
     status: StatusCode,
     headers: HeaderMap, // TODO: perhaps we don't need all headers, just select ones
 }
 
 impl ProxyHttpResponseInfo {
-    pub(crate) fn new(id: Uuid, status: StatusCode, headers: HeaderMap) -> Self {
-        Self { id, status, headers }
+    pub(crate) fn new(req_id: Uuid, conn_id: Uuid, status: StatusCode, headers: HeaderMap) -> Self {
+        Self { req_id, conn_id, status, headers }
     }
 
     #[inline]
-    pub(crate) fn id(&self) -> Uuid {
-        self.id
+    pub(crate) fn req_id(&self) -> Uuid {
+        self.req_id
+    }
+
+    #[inline]
+    pub(crate) fn conn_id(&self) -> Uuid {
+        self.conn_id
     }
 
     fn content_encoding(&self) -> String {
@@ -1269,7 +1278,7 @@ where
                         warn!(
                             proxy = P::name(),
                             request_id = %info.id(),
-                            connection_id = %info.connection_id(),
+                            connection_id = %info.conn_id(),
                             error = err,
                             "Proxy http request stream error",
                         );
@@ -1278,6 +1287,7 @@ where
                             proxy = P::name(),
                             error = err,
                             request_id = "unknown",
+                            connection_id = "unknown",
                             "Proxy http request stream error",
                         );
                     }
@@ -1292,7 +1302,7 @@ where
                     warn!(
                         proxy = P::name(),
                         request_id = %info.id(),
-                        connection_id = %info.connection_id(),
+                        connection_id = %info.conn_id(),
                         error = ?err,
                         "Proxy http request stream error",
                     );
@@ -1301,6 +1311,7 @@ where
                         proxy = P::name(),
                         error = ?err,
                         request_id = "unknown",
+                        connection_id = "unknown",
                         "Proxy http request stream error",
                     );
                 }
@@ -1348,9 +1359,11 @@ where
     C: ConfigProxyHttp,
     P: ProxyHttpInner<C>,
 {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         proxy: web::Data<ProxyHttp<C, P>>,
-        id: Uuid,
+        req_id: Uuid,
+        conn_id: Uuid,
         status: StatusCode,
         headers: HeaderMap,
         body: S,
@@ -1364,7 +1377,7 @@ where
             start: timestamp,
             body: Vec::with_capacity(preallocate),
             max_size,
-            info: Some(ProxyHttpResponseInfo::new(id, status, headers)),
+            info: Some(ProxyHttpResponseInfo::new(req_id, conn_id, status, headers)),
         }
     }
 }
@@ -1394,7 +1407,8 @@ where
                     if let Some(info) = mem::take(this.info) {
                         warn!(
                             proxy = P::name(),
-                            request_id = %info.id(),
+                            request_id = %info.req_id(),
+                            connection_id = %info.conn_id(),
                             error = err,
                             "Proxy http response stream error",
                         );
@@ -1403,6 +1417,7 @@ where
                             proxy = P::name(),
                             error = err,
                             request_id = "unknown",
+                            connection_id = "unknown",
                             "Proxy http response stream error",
                         );
                     }
@@ -1416,7 +1431,8 @@ where
                 if let Some(info) = mem::take(this.info) {
                     warn!(
                         proxy = P::name(),
-                        request_id = %info.id(),
+                        request_id = %info.req_id(),
+                        connection_id = %info.conn_id(),
                         error = ?err,
                         "Proxy http response stream error",
                     );
@@ -1425,6 +1441,7 @@ where
                         proxy = P::name(),
                         error = ?err,
                         request_id = "unknown",
+                        connection_id = "unknown",
                         "Proxy http response stream error",
                     );
                 }

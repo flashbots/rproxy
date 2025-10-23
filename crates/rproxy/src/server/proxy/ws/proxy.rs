@@ -255,7 +255,7 @@ where
                 error!(
                     proxy = P::name(),
                     request_id = %info.id(),
-                    connection_id = %info.connection_id(),
+                    connection_id = %info.conn_id(),
                     worker_id = %this.id,
                     error = ?err,
                     "Failed to upgrade to websocket",
@@ -279,7 +279,7 @@ where
         trace!(
             proxy = P::name(),
             request_id = %info.id(),
-            connection_id = %info.connection_id(),
+            connection_id = %info.conn_id(),
             worker_id = %this.id,
             backend_uri = %bknd_uri,
             "Starting websocket handshake...",
@@ -297,7 +297,7 @@ where
                 error!(
                     proxy = P::name(),
                     request_id = %info.id(),
-                    connection_id = %info.connection_id(),
+                    connection_id = %info.conn_id(),
                     worker_id = %this.id,
                     error = ?err,
                     "Failed to establish backend websocket session"
@@ -313,7 +313,7 @@ where
                     error!(
                         proxy = P::name(),
                         request_id = %info.id(),
-                        connection_id = %info.connection_id(),
+                        connection_id = %info.conn_id(),
                         worker_id = %this.id,
                         error = ?err,
                         "Failed to close client websocket session"
@@ -326,7 +326,7 @@ where
                 error!(
                     proxy = P::name(),
                     request_id = %info.id(),
-                    connection_id = %info.connection_id(),
+                    connection_id = %info.conn_id(),
                     worker_id = %this.id,
                     "Timed out to establish backend websocket session"
                 );
@@ -341,7 +341,7 @@ where
                     error!(
                         proxy = P::name(),
                         request_id = %info.id(),
-                        connection_id = %info.connection_id(),
+                        connection_id = %info.conn_id(),
                         worker_id = %this.id,
                         error = ?err,
                         "Failed to close client websocket session"
@@ -366,7 +366,7 @@ where
     ) {
         info!(
             proxy = P::name(),
-            connection_id = %info.connection_id(),
+            connection_id = %info.conn_id(),
             worker_id = %this.id,
             "Starting websocket pump..."
         );
@@ -425,7 +425,7 @@ where
         {
             debug!(
                     proxy = P::name(),
-                    connection_id = %info.connection_id(),
+                    connection_id = %info.conn_id(),
                     worker_id = %this.id,
                     msg = %msg,
                     "Closing client websocket session..."
@@ -439,7 +439,7 @@ where
             {
                 error!(
                     proxy = P::name(),
-                    connection_id = %info.connection_id(),
+                    connection_id = %info.conn_id(),
                     worker_id = %this.id,
                     msg = %msg,
                     error = ?err,
@@ -449,7 +449,7 @@ where
 
             debug!(
                     proxy = P::name(),
-                    connection_id = %info.connection_id(),
+                    connection_id = %info.conn_id(),
                     worker_id = %this.id,
                     msg = %msg,
                     "Closing backend websocket session..."
@@ -463,7 +463,7 @@ where
             {
                 error!(
                     proxy = P::name(),
-                    connection_id = %info.connection_id(),
+                    connection_id = %info.conn_id(),
                     worker_id = %this.id,
                     msg = %msg,
                     error = ?err,
@@ -473,7 +473,7 @@ where
         } else {
             debug!(
                     proxy = P::name(),
-                    connection_id = %info.connection_id(),
+                    connection_id = %info.conn_id(),
                     worker_id = %this.id,
                     "Closing client websocket session..."
             );
@@ -486,7 +486,7 @@ where
             {
                 error!(
                     proxy = P::name(),
-                    connection_id = %info.connection_id(),
+                    connection_id = %info.conn_id(),
                     worker_id = %this.id,
                     error = ?err,
                     "Failed to close client websocket session"
@@ -495,7 +495,7 @@ where
 
             debug!(
                     proxy = P::name(),
-                    connection_id = %info.connection_id(),
+                    connection_id = %info.conn_id(),
                     worker_id = %this.id,
                     "Closing backend websocket session..."
             );
@@ -508,7 +508,7 @@ where
             {
                 error!(
                     proxy = P::name(),
-                    connection_id = %info.connection_id(),
+                    connection_id = %info.conn_id(),
                     worker_id = %this.id,
                     error = ?err,
                     "Failed to close backend websocket session"
@@ -518,7 +518,7 @@ where
 
         info!(
             proxy = P::name(),
-            connection_id = %info.connection_id(),
+            connection_id = %info.conn_id(),
             worker_id = %this.id,
             "Stopped websocket pump"
         );
@@ -539,18 +539,18 @@ where
             if this.ping_balance_clnt.load(Ordering::Relaxed) > ping_threshold {
                 error!(
                     proxy = P::name(),
-                    connection_id = %info.connection_id(),
+                    connection_id = %info.conn_id(),
                     worker_id = %this.id,
                     "More than {} websocket pings sent to client didn't return, terminating the pump...", ping_threshold,
                 );
                 return Err(WS_CLNT_ERROR);
             }
 
-            let clnt_ping = ProxyWsPing::new(info.connection_id());
+            let clnt_ping = ProxyWsPing::new(info.conn_id());
             if let Err(err) = clnt_tx.ping(&clnt_ping.to_slice()).await {
                 error!(
                     proxy = P::name(),
-                    connection_id = %info.connection_id(),
+                    connection_id = %info.conn_id(),
                     worker_id = %this.id,
                     error = ?err,
                     "Failed to send ping websocket message to client"
@@ -567,18 +567,18 @@ where
             if this.ping_balance_bknd.load(Ordering::Relaxed) > ping_threshold {
                 error!(
                     proxy = P::name(),
-                    connection_id = %info.connection_id(),
+                    connection_id = %info.conn_id(),
                     worker_id = %this.id,
                     "More than {} websocket pings sent to backend didn't return, terminating the pump...", ping_threshold,
                 );
                 return Err(WS_BKND_ERROR);
             }
 
-            let bknd_ping = ProxyWsPing::new(info.connection_id());
+            let bknd_ping = ProxyWsPing::new(info.conn_id());
             if let Err(err) = bknd_tx.send(tungstenite::Message::Ping(bknd_ping.to_bytes())).await {
                 error!(
                     proxy = P::name(),
-                    connection_id = %info.connection_id(),
+                    connection_id = %info.conn_id(),
                     worker_id = %this.id,
                     error = ?err,
                     "Failed to send ping websocket message to backend"
@@ -609,7 +609,7 @@ where
                         {
                             error!(
                                 proxy = P::name(),
-                                connection_id = %info.connection_id(),
+                                connection_id = %info.conn_id(),
                                 worker_id = %this.id,
                                 error = ?err,
                                 "Failed to proxy binary websocket message to backend"
@@ -646,7 +646,7 @@ where
                         {
                             error!(
                                 proxy = P::name(),
-                                connection_id = %info.connection_id(),
+                                connection_id = %info.conn_id(),
                                 worker_id = %this.id,
                                 error = ?err,
                                 "Failed to proxy text websocket message to backend"
@@ -675,7 +675,7 @@ where
                         if let Err(err) = clnt_tx.pong(&bytes).await {
                             error!(
                                 proxy = P::name(),
-                                connection_id = %info.connection_id(),
+                                connection_id = %info.conn_id(),
                                 worker_id = %this.id,
                                 error = ?err,
                                 "Failed to return pong message to client"
@@ -707,7 +707,7 @@ where
                         }
                         warn!(
                             proxy = P::name(),
-                            connection_id = %info.connection_id(),
+                            connection_id = %info.conn_id(),
                             worker_id = %this.id,
                             "Unexpected websocket pong received from client",
                         );
@@ -729,7 +729,7 @@ where
                         {
                             error!(
                                 proxy = P::name(),
-                                connection_id = %info.connection_id(),
+                                connection_id = %info.conn_id(),
                                 worker_id = %this.id,
                                 error = ?err,
                                 "Failed to proxy close websocket message to backend"
@@ -746,7 +746,7 @@ where
             Some(Err(err)) => {
                 error!(
                     proxy = P::name(),
-                    connection_id = %info.connection_id(),
+                    connection_id = %info.conn_id(),
                     worker_id = %this.id,
                     error = ?err,
                     "Client websocket stream error"
@@ -757,7 +757,7 @@ where
             None => {
                 info!(
                     proxy = P::name(),
-                    connection_id = %info.connection_id(),
+                    connection_id = %info.conn_id(),
                     worker_id = %this.id,
                     "Client had closed websocket stream"
                 );
@@ -782,7 +782,7 @@ where
                         if let Err(err) = clnt_tx.binary(bytes.clone()).await {
                             error!(
                                 proxy = P::name(),
-                                connection_id = %info.connection_id(),
+                                connection_id = %info.conn_id(),
                                 worker_id = %this.id,
                                 error = ?err,
                                 "Failed to proxy binary websocket message to client"
@@ -811,7 +811,7 @@ where
                         if let Err(err) = clnt_tx.text(text.clone().as_str()).await {
                             error!(
                                 proxy = P::name(),
-                                connection_id = %info.connection_id(),
+                                connection_id = %info.conn_id(),
                                 worker_id = %this.id,
                                 error = ?err,
                                 "Failed to proxy text websocket message to client"
@@ -840,7 +840,7 @@ where
                         if let Err(err) = bknd_tx.send(tungstenite::Message::Pong(bytes)).await {
                             error!(
                                 proxy = P::name(),
-                                connection_id = %info.connection_id(),
+                                connection_id = %info.conn_id(),
                                 worker_id = %this.id,
                                 error = ?err,
                                 "Failed to return pong message to backend"
@@ -872,7 +872,7 @@ where
                         }
                         warn!(
                             proxy = P::name(),
-                            connection_id = %info.connection_id(),
+                            connection_id = %info.conn_id(),
                             worker_id = %this.id,
                             "Unexpected websocket pong received from backend",
                         );
@@ -891,7 +891,7 @@ where
                         {
                             error!(
                                 proxy = P::name(),
-                                connection_id = %info.connection_id(),
+                                connection_id = %info.conn_id(),
                                 worker_id = %this.id,
                                 error = ?err,
                                 "Failed to proxy close websocket message to client"
@@ -908,7 +908,7 @@ where
             Some(Err(err)) => {
                 error!(
                     proxy = P::name(),
-                    connection_id = %info.connection_id(),
+                    connection_id = %info.conn_id(),
                     worker_id = %this.id,
                     error = ?err,
                     "Backend websocket stream error"
@@ -919,7 +919,7 @@ where
             None => {
                 info!(
                     proxy = P::name(),
-                    connection_id = %info.connection_id(),
+                    connection_id = %info.conn_id(),
                     worker_id = %this.id,
                     "Backend had closed websocket stream"
                 );
@@ -955,7 +955,7 @@ where
 
                 info!(
                     proxy = P::name(),
-                    connection_id = %info.connection_id(),
+                    connection_id = %info.conn_id(),
                     worker_id = %worker_id,
                     remote_addr = info.remote_addr(),
                     ts_message_received = start.format(&Iso8601::DEFAULT).unwrap_or_default(),
@@ -977,7 +977,7 @@ where
 
                 info!(
                     proxy = P::name(),
-                    connection_id = %info.connection_id(),
+                    connection_id = %info.conn_id(),
                     worker_id = %worker_id,
                     remote_addr = info.remote_addr(),
                     ts_message_received = start.format(&Iso8601::DEFAULT).unwrap_or_default(),
@@ -999,7 +999,7 @@ where
 
                 info!(
                     proxy = P::name(),
-                    connection_id = %info.connection_id(),
+                    connection_id = %info.conn_id(),
                     worker_id = %worker_id,
                     remote_addr = info.remote_addr(),
                     ts_message_received = start.format(&Iso8601::DEFAULT).unwrap_or_default(),
@@ -1021,7 +1021,7 @@ where
 
                 info!(
                     proxy = P::name(),
-                    connection_id = %info.connection_id(),
+                    connection_id = %info.conn_id(),
                     worker_id = %worker_id,
                     remote_addr = info.remote_addr(),
                     ts_message_received = start.format(&Iso8601::DEFAULT).unwrap_or_default(),
@@ -1163,7 +1163,7 @@ where
                 error!(
                     proxy = P::name(),
                     request_id = %info.id(),
-                    connection_id = %info.connection_id(),
+                    connection_id = %info.conn_id(),
                     worker_id = %self.worker_id,
                     error = ?err,
                     "Failed to re-parse client request's path and query",
@@ -1177,7 +1177,7 @@ where
                 error!(
                     proxy = P::name(),
                     request_id = %info.id(),
-                    connection_id = %info.connection_id(),
+                    connection_id = %info.conn_id(),
                     worker_id = %self.worker_id,
                     error = ?err, "Failed to construct backend URI, defaulting to the base one",
                 );
@@ -1272,19 +1272,19 @@ enum ProxyWsMessage {
 #[derive(PartialEq, Eq)]
 struct ProxyWsPing {
     id: Uuid,
-    connection_id: Uuid,
+    conn_id: Uuid,
     timestamp: UtcDateTime,
 }
 
 impl ProxyWsPing {
-    fn new(connection_id: Uuid) -> Self {
-        Self { id: Uuid::now_v7(), connection_id, timestamp: UtcDateTime::now() }
+    fn new(conn_id: Uuid) -> Self {
+        Self { id: Uuid::now_v7(), conn_id, timestamp: UtcDateTime::now() }
     }
 
     fn to_bytes(&self) -> Bytes {
         let mut bytes = BytesMut::with_capacity(48);
         bytes.put_u128(self.id.as_u128());
-        bytes.put_u128(self.connection_id.as_u128());
+        bytes.put_u128(self.conn_id.as_u128());
         bytes.put_i128(self.timestamp.unix_timestamp_nanos());
         bytes.freeze()
     }
@@ -1295,12 +1295,12 @@ impl ProxyWsPing {
         }
 
         let id = Uuid::from_u128(bytes.get_u128());
-        let connection_id = Uuid::from_u128(bytes.get_u128());
+        let conn_id = Uuid::from_u128(bytes.get_u128());
         let Ok(timestamp) = UtcDateTime::from_unix_timestamp_nanos(bytes.get_i128()) else {
             return None
         };
 
-        Some(Self { id, connection_id, timestamp })
+        Some(Self { id, conn_id, timestamp })
     }
 
     fn to_slice(&self) -> [u8; 48] {
@@ -1308,7 +1308,7 @@ impl ProxyWsPing {
         let mut cur = std::io::Cursor::new(res);
 
         let _ = cur.write(self.id.as_bytes());
-        let _ = cur.write(self.connection_id.as_bytes());
+        let _ = cur.write(self.conn_id.as_bytes());
         let _ = cur.write(&self.timestamp.unix_timestamp_nanos().to_be_bytes());
 
         cur.into_inner()
