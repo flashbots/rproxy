@@ -51,13 +51,13 @@ use crate::{
 
 const WS_PING_INTERVAL_SECONDS: u64 = 1;
 
-const WS_CLI_ERROR: &str = "client error";
-const WS_BCK_ERROR: &str = "backend error";
-const WS_BCK_TIMEOUT: &str = "backend error";
+const WS_CLNT_ERROR: &str = "client error";
+const WS_BKND_ERROR: &str = "backend error";
+const WS_BKND_TIMEOUT: &str = "backend error";
 const WS_CLOSE_OK: &str = "";
 
-const WS_LABEL_BACKEND: &str = "backend";
-const WS_LABEL_CLIENT: &str = "client";
+const WS_LABEL_BKND: &str = "backend";
+const WS_LABEL_CLNT: &str = "client";
 
 // ProxyWs -------------------------------------------------------------
 
@@ -76,8 +76,8 @@ where
     backend: ProxyWsBackendEndpoint<C, P>,
 
     pings: HashMap<Uuid, ProxyWsPing>,
-    ping_balance_cli: AtomicI64,
-    ping_balance_bck: AtomicI64,
+    ping_balance_clnt: AtomicI64,
+    ping_balance_bknd: AtomicI64,
 
     _config: PhantomData<C>,
     _proxy: PhantomData<P>,
@@ -115,8 +115,8 @@ where
             resetter,
             backend,
             pings: HashMap::new(),
-            ping_balance_bck: AtomicI64::new(0),
-            ping_balance_cli: AtomicI64::new(0),
+            ping_balance_bknd: AtomicI64::new(0),
+            ping_balance_clnt: AtomicI64::new(0),
             _config: PhantomData,
             _proxy: PhantomData,
         }
@@ -243,13 +243,13 @@ where
 
     #[expect(clippy::unused_async, reason = "required by the actix framework")]
     async fn receive(
-        cli_req: HttpRequest,
-        cli_req_body: web::Payload,
+        clnt_req: HttpRequest,
+        clnt_req_body: web::Payload,
         this: web::Data<Self>,
     ) -> Result<HttpResponse, actix_web::Error> {
-        let info = ProxyHttpRequestInfo::new(&cli_req, cli_req.conn_data::<ConnectionGuard>());
+        let info = ProxyHttpRequestInfo::new(&clnt_req, clnt_req.conn_data::<ConnectionGuard>());
 
-        let (res, cli_tx, cli_rx) = match actix_ws::handle(&cli_req, cli_req_body) {
+        let (res, clnt_tx, clnt_rx) = match actix_ws::handle(&clnt_req, clnt_req_body) {
             Ok(res) => res,
             Err(err) => {
                 error!(
@@ -264,30 +264,30 @@ where
             }
         };
 
-        actix_web::rt::spawn(Self::handshake(this, cli_tx, cli_rx, info));
+        actix_web::rt::spawn(Self::handshake(this, clnt_tx, clnt_rx, info));
 
         Ok(res)
     }
 
     async fn handshake(
         this: web::Data<Self>,
-        cli_tx: Session,
-        cli_rx: MessageStream,
+        clnt_tx: Session,
+        clnt_rx: MessageStream,
         info: ProxyHttpRequestInfo,
     ) {
-        let bck_uri = this.backend.new_backend_uri(&info);
+        let bknd_uri = this.backend.new_backend_uri(&info);
         trace!(
             proxy = P::name(),
             request_id = %info.id(),
             connection_id = %info.connection_id(),
             worker_id = %this.id,
-            backend_uri = %bck_uri,
+            backend_uri = %bknd_uri,
             "Starting websocket handshake...",
         );
 
-        let (bck_stream, _) = match tokio::time::timeout(
+        let (bknd_stream, _) = match tokio::time::timeout(
             this.config().backend_timeout(),
-            tokio_tungstenite::connect_async(bck_uri),
+            tokio_tungstenite::connect_async(bknd_uri),
         )
         .await
         {
@@ -303,10 +303,10 @@ where
                     "Failed to establish backend websocket session"
                 );
 
-                if let Err(err) = cli_tx
+                if let Err(err) = clnt_tx
                     .close(Some(actix_ws::CloseReason {
                         code: awc::ws::CloseCode::Error,
-                        description: Some(String::from(WS_BCK_ERROR)),
+                        description: Some(String::from(WS_BKND_ERROR)),
                     }))
                     .await
                 {
@@ -331,10 +331,10 @@ where
                     "Timed out to establish backend websocket session"
                 );
 
-                if let Err(err) = cli_tx
+                if let Err(err) = clnt_tx
                     .close(Some(actix_ws::CloseReason {
                         code: awc::ws::CloseCode::Again,
-                        description: Some(String::from(WS_BCK_TIMEOUT)),
+                        description: Some(String::from(WS_BKND_TIMEOUT)),
                     }))
                     .await
                 {
@@ -351,18 +351,18 @@ where
             }
         };
 
-        let (bck_tx, bck_rx) = bck_stream.split();
+        let (bknd_tx, bknd_rx) = bknd_stream.split();
 
-        Self::pump(this, info, cli_tx, cli_rx, bck_tx, bck_rx).await;
+        Self::pump(this, info, clnt_tx, clnt_rx, bknd_tx, bknd_rx).await;
     }
 
     async fn pump(
         this: web::Data<Self>,
         info: ProxyHttpRequestInfo,
-        mut cli_tx: Session,
-        mut cli_rx: MessageStream,
-        mut bck_tx: SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, tungstenite::Message>,
-        mut bck_rx: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
+        mut clnt_tx: Session,
+        mut clnt_rx: MessageStream,
+        mut bknd_tx: SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, tungstenite::Message>,
+        mut bknd_rx: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
     ) {
         info!(
             proxy = P::name(),
@@ -391,30 +391,30 @@ where
 
                 // ping both sides
                 _ = heartbeat.tick() => {
-                    pumping = Self::heartbeat(&this, info.clone(), &mut cli_tx, &mut bck_tx).await;
+                    pumping = Self::heartbeat(&this, info.clone(), &mut clnt_tx, &mut bknd_tx).await;
                 }
 
                 // client => backend
-                cli_msg = cli_rx.next() => {
-                    pumping = Self::pump_cli_to_bck(
+                clnt_msg = clnt_rx.next() => {
+                    pumping = Self::pump_clnt_to_bknd(
                         &this,
                         info.clone(),
                         UtcDateTime::now(),
-                        cli_msg,
-                        &mut bck_tx,
-                        &mut cli_tx
+                        clnt_msg,
+                        &mut bknd_tx,
+                        &mut clnt_tx
                     ).await;
                 }
 
                 // backend => client
-                bck_msg = bck_rx.next() => {
-                    pumping = Self::pump_bck_to_cli(
+                bknd_msg = bknd_rx.next() => {
+                    pumping = Self::pump_bknd_to_cli(
                         &this,
                         info.clone(),
                         UtcDateTime::now(),
-                        bck_msg,
-                        &mut cli_tx,
-                        &mut bck_tx
+                        bknd_msg,
+                        &mut clnt_tx,
+                        &mut bknd_tx
                     ).await;
                 }
             }
@@ -430,7 +430,7 @@ where
                     msg = %msg,
                     "Closing client websocket session..."
             );
-            if let Err(err) = cli_tx
+            if let Err(err) = clnt_tx
                 .close(Some(actix_ws::CloseReason {
                     code: awc::ws::CloseCode::Error,
                     description: Some(String::from(msg)),
@@ -454,7 +454,7 @@ where
                     msg = %msg,
                     "Closing backend websocket session..."
             );
-            if let Err(err) = bck_tx
+            if let Err(err) = bknd_tx
                 .send(tungstenite::Message::Close(Some(tungstenite::protocol::CloseFrame {
                     code: tungstenite::protocol::frame::coding::CloseCode::Error,
                     reason: msg.into(),
@@ -477,7 +477,7 @@ where
                     worker_id = %this.id,
                     "Closing client websocket session..."
             );
-            if let Err(err) = cli_tx
+            if let Err(err) = clnt_tx
                 .close(Some(actix_ws::CloseReason {
                     code: awc::ws::CloseCode::Normal,
                     description: None,
@@ -499,7 +499,7 @@ where
                     worker_id = %this.id,
                     "Closing backend websocket session..."
             );
-            if let Err(err) = bck_tx
+            if let Err(err) = bknd_tx
                 .send(tungstenite::Message::Close(Some(tungstenite::protocol::CloseFrame {
                     code: tungstenite::protocol::frame::coding::CloseCode::Normal,
                     reason: Utf8Bytes::default(),
@@ -527,8 +527,8 @@ where
     async fn heartbeat(
         this: &web::Data<Self>,
         info: Arc<ProxyHttpRequestInfo>,
-        cli_tx: &mut Session,
-        bck_tx: &mut SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, tungstenite::Message>,
+        clnt_tx: &mut Session,
+        bknd_tx: &mut SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, tungstenite::Message>,
     ) -> Result<(), &'static str> {
         let ping_threshold =
             (1 + this.config().backend_timeout().as_secs() / WS_PING_INTERVAL_SECONDS) as i64;
@@ -536,18 +536,18 @@ where
         {
             // ping -> client
 
-            if this.ping_balance_cli.load(Ordering::Relaxed) > ping_threshold {
+            if this.ping_balance_clnt.load(Ordering::Relaxed) > ping_threshold {
                 error!(
                     proxy = P::name(),
                     connection_id = %info.connection_id(),
                     worker_id = %this.id,
                     "More than {} websocket pings sent to client didn't return, terminating the pump...", ping_threshold,
                 );
-                return Err(WS_CLI_ERROR);
+                return Err(WS_CLNT_ERROR);
             }
 
-            let cli_ping = ProxyWsPing::new(info.connection_id());
-            if let Err(err) = cli_tx.ping(&cli_ping.to_slice()).await {
+            let clnt_ping = ProxyWsPing::new(info.connection_id());
+            if let Err(err) = clnt_tx.ping(&clnt_ping.to_slice()).await {
                 error!(
                     proxy = P::name(),
                     connection_id = %info.connection_id(),
@@ -555,27 +555,27 @@ where
                     error = ?err,
                     "Failed to send ping websocket message to client"
                 );
-                return Err(WS_CLI_ERROR);
+                return Err(WS_CLNT_ERROR);
             }
-            let _ = this.pings.insert_sync(cli_ping.id, cli_ping);
-            this.ping_balance_cli.inc();
+            let _ = this.pings.insert_sync(clnt_ping.id, clnt_ping);
+            this.ping_balance_clnt.inc();
         }
 
         {
             // ping -> backend
 
-            if this.ping_balance_bck.load(Ordering::Relaxed) > ping_threshold {
+            if this.ping_balance_bknd.load(Ordering::Relaxed) > ping_threshold {
                 error!(
                     proxy = P::name(),
                     connection_id = %info.connection_id(),
                     worker_id = %this.id,
                     "More than {} websocket pings sent to backend didn't return, terminating the pump...", ping_threshold,
                 );
-                return Err(WS_BCK_ERROR);
+                return Err(WS_BKND_ERROR);
             }
 
-            let bck_ping = ProxyWsPing::new(info.connection_id());
-            if let Err(err) = bck_tx.send(tungstenite::Message::Ping(bck_ping.to_bytes())).await {
+            let bknd_ping = ProxyWsPing::new(info.connection_id());
+            if let Err(err) = bknd_tx.send(tungstenite::Message::Ping(bknd_ping.to_bytes())).await {
                 error!(
                     proxy = P::name(),
                     connection_id = %info.connection_id(),
@@ -583,29 +583,29 @@ where
                     error = ?err,
                     "Failed to send ping websocket message to backend"
                 );
-                return Err(WS_BCK_ERROR);
+                return Err(WS_BKND_ERROR);
             }
-            let _ = this.pings.insert_sync(bck_ping.id, bck_ping);
-            this.ping_balance_bck.inc();
+            let _ = this.pings.insert_sync(bknd_ping.id, bknd_ping);
+            this.ping_balance_bknd.inc();
         }
         Ok(())
     }
 
-    async fn pump_cli_to_bck(
+    async fn pump_clnt_to_bknd(
         this: &web::Data<Self>,
         info: Arc<ProxyHttpRequestInfo>,
         timestamp: UtcDateTime,
-        cli_msg: Option<Result<actix_ws::Message, actix_http::ws::ProtocolError>>,
-        bck_tx: &mut SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, tungstenite::Message>,
-        cli_tx: &mut Session,
+        clnt_msg: Option<Result<actix_ws::Message, actix_http::ws::ProtocolError>>,
+        bknd_tx: &mut SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, tungstenite::Message>,
+        clnt_tx: &mut Session,
     ) -> Result<(), &'static str> {
-        match cli_msg {
+        match clnt_msg {
             Some(Ok(msg)) => {
                 match msg {
                     // binary
                     actix_ws::Message::Binary(bytes) => {
                         if let Err(err) =
-                            bck_tx.send(tungstenite::Message::Binary(bytes.clone())).await
+                            bknd_tx.send(tungstenite::Message::Binary(bytes.clone())).await
                         {
                             error!(
                                 proxy = P::name(),
@@ -619,10 +619,10 @@ where
                                 .ws_proxy_failure_count
                                 .get_or_create(&LabelsProxyWs {
                                     proxy: P::name(),
-                                    destination: WS_LABEL_BACKEND,
+                                    destination: WS_LABEL_BKND,
                                 })
                                 .inc();
-                            return Err(WS_BCK_ERROR);
+                            return Err(WS_BKND_ERROR);
                         }
                         this.postprocessor.do_send(ProxyWsMessage::ClientToBackendBinary {
                             msg: bytes,
@@ -635,7 +635,7 @@ where
 
                     // text
                     actix_ws::Message::Text(text) => {
-                        if let Err(err) = bck_tx
+                        if let Err(err) = bknd_tx
                             .send(tungstenite::Message::Text(unsafe {
                                 // safety: it's from client's ws message => must be valid utf-8
                                 tungstenite::protocol::frame::Utf8Bytes::from_bytes_unchecked(
@@ -656,10 +656,10 @@ where
                                 .ws_proxy_failure_count
                                 .get_or_create(&LabelsProxyWs {
                                     proxy: P::name(),
-                                    destination: WS_LABEL_BACKEND,
+                                    destination: WS_LABEL_BKND,
                                 })
                                 .inc();
-                            return Err(WS_BCK_ERROR);
+                            return Err(WS_BKND_ERROR);
                         }
                         this.postprocessor.do_send(ProxyWsMessage::ClientToBackendText {
                             msg: text,
@@ -672,7 +672,7 @@ where
 
                     // ping
                     actix_ws::Message::Ping(bytes) => {
-                        if let Err(err) = cli_tx.pong(&bytes).await {
+                        if let Err(err) = clnt_tx.pong(&bytes).await {
                             error!(
                                 proxy = P::name(),
                                 connection_id = %info.connection_id(),
@@ -680,7 +680,7 @@ where
                                 error = ?err,
                                 "Failed to return pong message to client"
                             );
-                            return Err(WS_CLI_ERROR);
+                            return Err(WS_CLNT_ERROR);
                         }
                         Ok(())
                     }
@@ -691,13 +691,13 @@ where
                             let Some((_, ping)) = this.pings.remove_sync(&pong.id) &&
                             pong == ping
                         {
-                            this.ping_balance_cli.dec();
+                            this.ping_balance_clnt.dec();
                             this.shared
                                 .metrics
                                 .ws_latency_client
                                 .get_or_create(&LabelsProxyWs {
                                     proxy: P::name(),
-                                    destination: WS_LABEL_BACKEND,
+                                    destination: WS_LABEL_BKND,
                                 })
                                 .record(
                                     (1000000.0 * (timestamp - pong.timestamp).as_seconds_f64() /
@@ -716,7 +716,7 @@ where
 
                     // close
                     actix_ws::Message::Close(reason) => {
-                        if let Err(err) = bck_tx
+                        if let Err(err) = bknd_tx
                             .send(tungstenite::Message::Close(reason.map(|r| {
                                 tungstenite::protocol::CloseFrame {
                                     code: tungstenite::protocol::frame::coding::CloseCode::from(
@@ -734,7 +734,7 @@ where
                                 error = ?err,
                                 "Failed to proxy close websocket message to backend"
                             );
-                            return Err(WS_BCK_ERROR);
+                            return Err(WS_BKND_ERROR);
                         }
                         Err(WS_CLOSE_OK)
                     }
@@ -751,7 +751,7 @@ where
                     error = ?err,
                     "Client websocket stream error"
                 );
-                Err(WS_CLI_ERROR)
+                Err(WS_CLNT_ERROR)
             }
 
             None => {
@@ -766,20 +766,20 @@ where
         }
     }
 
-    async fn pump_bck_to_cli(
+    async fn pump_bknd_to_cli(
         this: &web::Data<Self>,
         info: Arc<ProxyHttpRequestInfo>,
         timestamp: UtcDateTime,
-        bck_msg: Option<Result<tungstenite::Message, tungstenite::Error>>,
-        cli_tx: &mut Session,
-        bck_tx: &mut SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, tungstenite::Message>,
+        bknd_msg: Option<Result<tungstenite::Message, tungstenite::Error>>,
+        clnt_tx: &mut Session,
+        bknd_tx: &mut SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, tungstenite::Message>,
     ) -> Result<(), &'static str> {
-        match bck_msg {
+        match bknd_msg {
             Some(Ok(msg)) => {
                 match msg {
                     // binary
                     tungstenite::Message::Binary(bytes) => {
-                        if let Err(err) = cli_tx.binary(bytes.clone()).await {
+                        if let Err(err) = clnt_tx.binary(bytes.clone()).await {
                             error!(
                                 proxy = P::name(),
                                 connection_id = %info.connection_id(),
@@ -792,10 +792,10 @@ where
                                 .ws_proxy_failure_count
                                 .get_or_create(&LabelsProxyWs {
                                     proxy: P::name(),
-                                    destination: WS_LABEL_CLIENT,
+                                    destination: WS_LABEL_CLNT,
                                 })
                                 .inc();
-                            return Err(WS_CLI_ERROR);
+                            return Err(WS_CLNT_ERROR);
                         }
                         this.postprocessor.do_send(ProxyWsMessage::BackendToClientBinary {
                             msg: bytes,
@@ -808,7 +808,7 @@ where
 
                     // text
                     tungstenite::Message::Text(text) => {
-                        if let Err(err) = cli_tx.text(text.clone().as_str()).await {
+                        if let Err(err) = clnt_tx.text(text.clone().as_str()).await {
                             error!(
                                 proxy = P::name(),
                                 connection_id = %info.connection_id(),
@@ -821,10 +821,10 @@ where
                                 .ws_proxy_failure_count
                                 .get_or_create(&LabelsProxyWs {
                                     proxy: P::name(),
-                                    destination: WS_LABEL_CLIENT,
+                                    destination: WS_LABEL_CLNT,
                                 })
                                 .inc();
-                            return Err(WS_CLI_ERROR);
+                            return Err(WS_CLNT_ERROR);
                         }
                         this.postprocessor.do_send(ProxyWsMessage::BackendToClientText {
                             msg: text,
@@ -837,7 +837,7 @@ where
 
                     // ping
                     tungstenite::Message::Ping(bytes) => {
-                        if let Err(err) = bck_tx.send(tungstenite::Message::Pong(bytes)).await {
+                        if let Err(err) = bknd_tx.send(tungstenite::Message::Pong(bytes)).await {
                             error!(
                                 proxy = P::name(),
                                 connection_id = %info.connection_id(),
@@ -845,7 +845,7 @@ where
                                 error = ?err,
                                 "Failed to return pong message to backend"
                             );
-                            return Err(WS_BCK_ERROR);
+                            return Err(WS_BKND_ERROR);
                         }
                         Ok(())
                     }
@@ -856,13 +856,13 @@ where
                             let Some((_, ping)) = this.pings.remove_sync(&pong.id) &&
                             pong == ping
                         {
-                            this.ping_balance_bck.dec();
+                            this.ping_balance_bknd.dec();
                             this.shared
                                 .metrics
                                 .ws_latency_backend
                                 .get_or_create(&LabelsProxyWs {
                                     proxy: P::name(),
-                                    destination: WS_LABEL_BACKEND,
+                                    destination: WS_LABEL_BKND,
                                 })
                                 .record(
                                     (1000000.0 * (timestamp - pong.timestamp).as_seconds_f64() /
@@ -881,7 +881,7 @@ where
 
                     // close
                     tungstenite::Message::Close(reason) => {
-                        if let Err(err) = cli_tx
+                        if let Err(err) = clnt_tx
                             .clone() // .close() consumes it
                             .close(reason.map(|reason| actix_ws::CloseReason {
                                 code: u16::from(reason.code).into(),
@@ -896,7 +896,7 @@ where
                                 error = ?err,
                                 "Failed to proxy close websocket message to client"
                             );
-                            return Err(WS_CLI_ERROR);
+                            return Err(WS_CLNT_ERROR);
                         }
                         Err(WS_CLOSE_OK)
                     }
@@ -913,7 +913,7 @@ where
                     error = ?err,
                     "Backend websocket stream error"
                 );
-                Err(WS_BCK_ERROR)
+                Err(WS_BKND_ERROR)
             }
 
             None => {
@@ -1054,7 +1054,7 @@ where
     fn emit_metrics_on_proxy_success(msg: &ProxyWsMessage, metrics: Arc<Metrics>) {
         match msg {
             ProxyWsMessage::BackendToClientBinary { msg, info: _, start, end } => {
-                let labels = LabelsProxyWs { proxy: P::name(), destination: WS_LABEL_CLIENT };
+                let labels = LabelsProxyWs { proxy: P::name(), destination: WS_LABEL_CLNT };
                 metrics
                     .ws_latency_proxy
                     .get_or_create(&labels)
@@ -1064,7 +1064,7 @@ where
             }
 
             ProxyWsMessage::BackendToClientText { msg, info: _, start, end } => {
-                let labels = LabelsProxyWs { proxy: P::name(), destination: WS_LABEL_CLIENT };
+                let labels = LabelsProxyWs { proxy: P::name(), destination: WS_LABEL_CLNT };
                 metrics
                     .ws_latency_proxy
                     .get_or_create(&labels)
@@ -1074,7 +1074,7 @@ where
             }
 
             ProxyWsMessage::ClientToBackendBinary { msg, info: _, start, end } => {
-                let labels = LabelsProxyWs { proxy: P::name(), destination: WS_LABEL_BACKEND };
+                let labels = LabelsProxyWs { proxy: P::name(), destination: WS_LABEL_BKND };
                 metrics
                     .ws_latency_proxy
                     .get_or_create(&labels)
@@ -1084,7 +1084,7 @@ where
             }
 
             ProxyWsMessage::ClientToBackendText { msg, info: _, start, end } => {
-                let labels = LabelsProxyWs { proxy: P::name(), destination: WS_LABEL_BACKEND };
+                let labels = LabelsProxyWs { proxy: P::name(), destination: WS_LABEL_BKND };
                 metrics
                     .ws_latency_proxy
                     .get_or_create(&labels)

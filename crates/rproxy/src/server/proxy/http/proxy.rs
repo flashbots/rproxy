@@ -274,31 +274,31 @@ where
         Ok(socket.into())
     }
 
-    fn to_client_response<S>(bck_res: &ClientResponse<S>) -> HttpResponseBuilder {
-        let mut cli_res = HttpResponse::build(bck_res.status());
+    fn to_client_response<S>(bknd_res: &ClientResponse<S>) -> HttpResponseBuilder {
+        let mut clnt_res = HttpResponse::build(bknd_res.status());
 
-        for (name, header) in bck_res.headers().iter() {
-            if is_hop_by_hop_header(name) {
+        for (hkey, hval) in bknd_res.headers().iter() {
+            if is_hop_by_hop_header(hkey) {
                 continue;
             }
-            if let Ok(hname) = header::HeaderName::from_str(name.as_str()) {
-                cli_res.append_header((hname, header.clone()));
+            if let Ok(hkey) = header::HeaderName::from_str(hkey.as_str()) {
+                clnt_res.append_header((hkey, hval.clone()));
             }
         }
 
-        cli_res
+        clnt_res
     }
 
     /// receive accepts client's (frontend) request and proxies it to
     /// backend
     async fn receive(
-        cli_req: HttpRequest,
-        cli_req_body: web::Payload,
+        clnt_req: HttpRequest,
+        clnt_req_body: web::Payload,
         this: web::Data<Self>,
     ) -> Result<HttpResponse, actix_web::Error> {
         let timestamp = UtcDateTime::now();
 
-        if let Some(user_agent) = cli_req.headers().get(header::USER_AGENT) &&
+        if let Some(user_agent) = clnt_req.headers().get(header::USER_AGENT) &&
             !user_agent.is_empty() &&
             let Ok(user_agent) = user_agent.to_str()
         {
@@ -312,21 +312,21 @@ where
                 .inc();
         }
 
-        let info = ProxyHttpRequestInfo::new(&cli_req, cli_req.conn_data::<ConnectionGuard>());
+        let info = ProxyHttpRequestInfo::new(&clnt_req, clnt_req.conn_data::<ConnectionGuard>());
 
         let id = info.id;
         let connection_id = info.connection_id;
 
-        let bck_req = this.backend.new_backend_request(&info);
-        let bck_req_body = ProxyHttpRequestBody::new(
+        let bknd_req = this.backend.new_backend_request(&info);
+        let bknd_req_body = ProxyHttpRequestBody::new(
             this.clone(),
             info,
-            cli_req_body,
+            clnt_req_body,
             this.shared.config().prealloacated_request_buffer_size(),
             timestamp,
         );
 
-        let bck_res = match bck_req.send_stream(bck_req_body).await {
+        let bknd_res = match bknd_req.send_stream(bknd_req_body).await {
             Ok(res) => res,
             Err(err) => {
                 warn!(
@@ -348,21 +348,21 @@ where
         };
 
         let timestamp = UtcDateTime::now();
-        let status = bck_res.status();
-        let mut cli_res = Self::to_client_response(&bck_res);
+        let status = bknd_res.status();
+        let mut clnt_res = Self::to_client_response(&bknd_res);
 
         let preallocate = this.shared.config().prealloacated_response_buffer_size();
-        let bck_body = ProxyHttpResponseBody::new(
+        let bknd_res_body = ProxyHttpResponseBody::new(
             this,
             id,
             status,
-            bck_res.headers().clone(),
-            bck_res.into_stream(),
+            bknd_res.headers().clone(),
+            bknd_res.into_stream(),
             preallocate,
             timestamp,
         );
 
-        Ok(cli_res.streaming(bck_body))
+        Ok(clnt_res.streaming(bknd_res_body))
     }
 
     fn postprocess_client_request(&self, req: ProxiedHttpRequest) {
@@ -380,11 +380,11 @@ where
         };
     }
 
-    fn postprocess_backend_response(&self, bck_res: ProxiedHttpResponse) {
-        let Some((_, cli_req)) = self.requests.remove_sync(&bck_res.info.id) else {
+    fn postprocess_backend_response(&self, bknd_res: ProxiedHttpResponse) {
+        let Some((_, clnt_req)) = self.requests.remove_sync(&bknd_res.info.id) else {
             error!(
                 proxy = P::name(),
-                request_id = %bck_res.info.id,
+                request_id = %bknd_res.info.id,
                 worker_id = %self.id,
                 "Proxied http response for unmatching request",
             );
@@ -393,31 +393,31 @@ where
 
         // hand over to postprocessor asynchronously so that we can return the
         // response to the client as early as possible
-        self.postprocessor.do_send(ProxiedHttpCombo { req: cli_req, res: bck_res });
+        self.postprocessor.do_send(ProxiedHttpCombo { req: clnt_req, res: bknd_res });
     }
 
     fn finalise_proxying(
-        mut cli_req: ProxiedHttpRequest,
-        mut bck_res: ProxiedHttpResponse,
+        mut clnt_req: ProxiedHttpRequest,
+        mut bknd_res: ProxiedHttpResponse,
         inner: Arc<P>,
         worker_id: Uuid,
         metrics: Arc<Metrics>,
         mirroring_peers: Arc<Vec<actix::Addr<ProxyHttpBackendEndpoint<C, P>>>>,
         mut mirroring_peer_round_robin_index: usize,
     ) {
-        if cli_req.decompressed_size < cli_req.size {
-            (cli_req.decompressed_body, cli_req.decompressed_size) =
-                decompress(cli_req.body.clone(), cli_req.size, cli_req.info.content_encoding());
+        if clnt_req.decompressed_size < clnt_req.size {
+            (clnt_req.decompressed_body, clnt_req.decompressed_size) =
+                decompress(clnt_req.body.clone(), clnt_req.size, clnt_req.info.content_encoding());
         }
 
-        if bck_res.decompressed_size < bck_res.size {
-            (bck_res.decompressed_body, bck_res.decompressed_size) =
-                decompress(bck_res.body.clone(), bck_res.size, bck_res.info.content_encoding());
+        if bknd_res.decompressed_size < bknd_res.size {
+            (bknd_res.decompressed_body, bknd_res.decompressed_size) =
+                decompress(bknd_res.body.clone(), bknd_res.size, bknd_res.info.content_encoding());
         }
 
-        match serde_json::from_slice::<JrpcRequestMetaMaybeBatch>(&cli_req.decompressed_body) {
+        match serde_json::from_slice::<JrpcRequestMetaMaybeBatch>(&clnt_req.decompressed_body) {
             Ok(jrpc) => {
-                if inner.should_mirror(&jrpc, &cli_req, &bck_res) {
+                if inner.should_mirror(&jrpc, &clnt_req, &bknd_res) {
                     let mirrors_count = match inner.config().mirroring_strategy() {
                         ConfigProxyHttpMirroringStrategy::FanOut => mirroring_peers.len(),
                         ConfigProxyHttpMirroringStrategy::RoundRobin => 1,
@@ -431,7 +431,7 @@ where
                             mirroring_peer_round_robin_index = 0;
                         }
 
-                        let mut req = cli_req.clone();
+                        let mut req = clnt_req.clone();
                         req.info.jrpc_method_enriched = jrpc.method_enriched();
                         mirroring_peer.do_send(req.clone());
                     }
@@ -439,20 +439,20 @@ where
 
                 Self::maybe_log_proxied_request_and_response(
                     &jrpc,
-                    &cli_req,
-                    &bck_res,
+                    &clnt_req,
+                    &bknd_res,
                     inner.clone(),
                     worker_id,
                 );
 
-                Self::emit_metrics_on_proxy_success(&jrpc, &cli_req, &bck_res, metrics.clone());
+                Self::emit_metrics_on_proxy_success(&jrpc, &clnt_req, &bknd_res, metrics.clone());
             }
 
             Err(err) => {
                 warn!(
                     proxy = P::name(),
-                    request_id = %cli_req.info.id,
-                    connection_id = %cli_req.info.connection_id,
+                    request_id = %clnt_req.info.id,
+                    connection_id = %clnt_req.info.connection_id,
                     worker_id = %worker_id,
                     error = ?err,
                     "Failed to parse json-rpc request",
@@ -462,29 +462,29 @@ where
     }
 
     fn postprocess_mirrored_response(
-        mut cli_req: ProxiedHttpRequest,
-        mut mrr_res: ProxiedHttpResponse,
+        mut clnt_req: ProxiedHttpRequest,
+        mut mirr_res: ProxiedHttpResponse,
         inner: Arc<P>,
         metrics: Arc<Metrics>,
         worker_id: Uuid,
     ) {
-        if cli_req.decompressed_size < cli_req.size {
-            (cli_req.decompressed_body, cli_req.decompressed_size) =
-                decompress(cli_req.body.clone(), cli_req.size, cli_req.info.content_encoding());
+        if clnt_req.decompressed_size < clnt_req.size {
+            (clnt_req.decompressed_body, clnt_req.decompressed_size) =
+                decompress(clnt_req.body.clone(), clnt_req.size, clnt_req.info.content_encoding());
         }
 
-        if mrr_res.decompressed_size < mrr_res.size {
-            (mrr_res.decompressed_body, mrr_res.decompressed_size) =
-                decompress(mrr_res.body.clone(), mrr_res.size, mrr_res.info.content_encoding());
+        if mirr_res.decompressed_size < mirr_res.size {
+            (mirr_res.decompressed_body, mirr_res.decompressed_size) =
+                decompress(mirr_res.body.clone(), mirr_res.size, mirr_res.info.content_encoding());
         }
 
-        Self::maybe_log_mirrored_request(&cli_req, &mrr_res, worker_id, inner.config());
+        Self::maybe_log_mirrored_request(&clnt_req, &mirr_res, worker_id, inner.config());
 
         metrics
             .http_mirror_success_count
             .get_or_create(&LabelsProxyHttpJrpc {
                 proxy: P::name(),
-                jrpc_method: cli_req.info.jrpc_method_enriched,
+                jrpc_method: clnt_req.info.jrpc_method_enriched,
             })
             .inc();
     }
@@ -978,36 +978,36 @@ where
 {
     type Result = ();
 
-    fn handle(&mut self, cli_req: ProxiedHttpRequest, ctx: &mut Self::Context) -> Self::Result {
+    fn handle(&mut self, clnt_req: ProxiedHttpRequest, ctx: &mut Self::Context) -> Self::Result {
         let start = UtcDateTime::now();
 
         let inner = self.inner.clone();
         let worker_id = self.worker_id;
         let metrics = self.metrics.clone();
 
-        let mrr_req = self.new_backend_request(&cli_req.info);
-        let mrr_req_body = cli_req.body.clone();
+        let mirr_req = self.new_backend_request(&clnt_req.info);
+        let mirr_req_body = clnt_req.body.clone();
 
         ctx.spawn(
             async move {
-                match mrr_req.send_body(mrr_req_body).await {
-                    Ok(mut bck_res) => {
+                match mirr_req.send_body(mirr_req_body).await {
+                    Ok(mut bknd_res) => {
                         let end = UtcDateTime::now();
 
-                        match bck_res.body().await {
-                            Ok(mrr_res_body) => {
-                                let size = match mrr_res_body.size() {
+                        match bknd_res.body().await {
+                            Ok(mirr_res_body) => {
+                                let size = match mirr_res_body.size() {
                                     BodySize::Sized(size) => size, // Body is always sized
                                     BodySize::None | BodySize::Stream => 0,
                                 };
                                 let info = ProxyHttpResponseInfo::new(
-                                    cli_req.info.id,
-                                    bck_res.status(),
-                                    bck_res.headers().clone(),
+                                    clnt_req.info.id,
+                                    bknd_res.status(),
+                                    bknd_res.headers().clone(),
                                 );
-                                let mrr_res = ProxiedHttpResponse {
+                                let mirr_res = ProxiedHttpResponse {
                                     info,
-                                    body: mrr_res_body,
+                                    body: mirr_res_body,
                                     size: size as usize,
                                     decompressed_body: Bytes::new(),
                                     decompressed_size: 0,
@@ -1015,14 +1015,14 @@ where
                                     end,
                                 };
                                 ProxyHttp::<C, P>::postprocess_mirrored_response(
-                                    cli_req, mrr_res, inner, metrics, worker_id,
+                                    clnt_req, mirr_res, inner, metrics, worker_id,
                                 );
                             }
                             Err(err) => {
                                 warn!(
                                     proxy = P::name(),
-                                    request_id = %cli_req.info.id,
-                                    connection_id = %cli_req.info.connection_id,
+                                    request_id = %clnt_req.info.id,
+                                    connection_id = %clnt_req.info.connection_id,
                                     error = ?err,
                                     "Failed to mirror a request",
                                 );
@@ -1037,8 +1037,8 @@ where
                     Err(err) => {
                         warn!(
                             proxy = P::name(),
-                            request_id = %cli_req.info.id,
-                            connection_id = %cli_req.info.connection_id,
+                            request_id = %clnt_req.info.id,
+                            connection_id = %clnt_req.info.connection_id,
                             error = ?err,
                             "Failed to mirror a request",
                         );
