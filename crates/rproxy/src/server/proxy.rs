@@ -95,7 +95,7 @@ pub(crate) trait ProxyInner: 'static {
 
 // ProxyConnectionGuard ------------------------------------------------
 
-pub struct ProxyConnectionGuard {
+pub(crate) struct ProxyConnectionGuard {
     pub id: Uuid,
     pub remote_addr: Option<String>,
     pub local_addr: Option<String>,

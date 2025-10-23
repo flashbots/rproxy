@@ -229,7 +229,7 @@ impl ConfigRpc {
             let backend_url = Url::parse(&self.backend_url.clone()).expect(ALREADY_VALIDATED);
             let backend_host = backend_url.host_str().expect(ALREADY_VALIDATED);
 
-            let backend_ips: Vec<IpAddr> = match format!("{}:0", backend_host).to_socket_addrs() {
+            let backend_ips: Vec<IpAddr> = match format!("{backend_host}:0").to_socket_addrs() {
                 Ok(res) => res,
                 Err(err) => {
                     warn!(host = backend_host, error = ?err, "Failed to resolve backend host");
@@ -255,7 +255,7 @@ impl ConfigRpc {
                     return false;
                 }
 
-                let peer_ips: Vec<IpAddr> = match format!("{}:0", peer_host).to_socket_addrs() {
+                let peer_ips: Vec<IpAddr> = match format!("{peer_host}:0").to_socket_addrs() {
                     Ok(res) => res,
                     Err(err) => {
                         warn!(host = peer_host, error = ?err, "Failed to resolve peer host");

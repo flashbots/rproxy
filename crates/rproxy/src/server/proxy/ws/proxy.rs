@@ -242,6 +242,7 @@ where
         Ok(socket.into())
     }
 
+    #[expect(clippy::unused_async, reason = "required by the actix framework")]
     async fn receive(
         cli_req: HttpRequest,
         cli_req_body: web::Payload,
@@ -1303,9 +1304,8 @@ impl ProxyWsPing {
 
         let id = Uuid::from_u128(bytes.get_u128());
         let connection_id = Uuid::from_u128(bytes.get_u128());
-        let timestamp = match UtcDateTime::from_unix_timestamp_nanos(bytes.get_i128()) {
-            Ok(timestamp) => timestamp,
-            Err(_) => return None,
+        let Ok(timestamp) = UtcDateTime::from_unix_timestamp_nanos(bytes.get_i128()) else {
+            return None
         };
 
         Some(Self { id, connection_id, timestamp })

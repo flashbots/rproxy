@@ -338,7 +338,7 @@ where
                     .http_proxy_failure_count
                     .get_or_create(&LabelsProxy { proxy: P::name() })
                     .inc();
-                return Ok(HttpResponse::BadGateway().body(format!("Backend error: {:?}", err)));
+                return Ok(HttpResponse::BadGateway().body(format!("Backend error: {err:?}")));
             }
         };
 
@@ -374,17 +374,14 @@ where
     }
 
     fn postprocess_backend_response(&self, bck_res: ProxiedHttpResponse) {
-        let cli_req = match self.requests.remove_sync(&bck_res.info.id) {
-            Some((_, req)) => req,
-            None => {
-                error!(
-                    proxy = P::name(),
-                    request_id = %bck_res.info.id,
-                    worker_id = %self.id,
-                    "Proxied http response for unmatching request",
-                );
-                return;
-            }
+        let Some((_, cli_req)) = self.requests.remove_sync(&bck_res.info.id) else {
+            error!(
+                proxy = P::name(),
+                request_id = %bck_res.info.id,
+                worker_id = %self.id,
+                "Proxied http response for unmatching request",
+            );
+            return;
         };
 
         // hand over to postprocessor asynchronously so that we can return the
@@ -584,10 +581,7 @@ where
                 return;
             }
 
-            let message = match message.as_object_mut() {
-                Some(message) => message,
-                None => return,
-            };
+            let Some(message) = message.as_object_mut() else { return };
 
             let method = (match message.get_key_value("method") {
                 Some((_, method)) => method.as_str(),
@@ -599,14 +593,12 @@ where
             if !method.is_empty() {
                 // single-shot request
 
-                let params = match match message.get_mut("params") {
+                let Some(params) = match message.get_mut("params") {
                     Some(params) => params,
                     None => return,
                 }
-                .as_array_mut()
-                {
-                    Some(params) => params,
-                    None => return,
+                .as_array_mut() else {
+                    return
                 };
 
                 match method.as_str() {
@@ -615,19 +607,14 @@ where
                             return;
                         }
 
-                        let execution_payload = match params[1].as_object_mut() {
-                            Some(execution_payload) => execution_payload,
-                            None => return,
-                        };
+                        let Some(execution_payload) = params[1].as_object_mut() else { return };
 
-                        let transactions = match match execution_payload.get_mut("transactions") {
+                        let Some(transactions) = match execution_payload.get_mut("transactions") {
                             Some(transactions) => transactions,
                             None => return,
                         }
-                        .as_array_mut()
-                        {
-                            Some(transactions) => transactions,
-                            None => return,
+                        .as_array_mut() else {
+                            return
                         };
 
                         for transaction in transactions {
@@ -640,19 +627,14 @@ where
                             return;
                         }
 
-                        let execution_payload = match params[0].as_object_mut() {
-                            Some(execution_payload) => execution_payload,
-                            None => return,
-                        };
+                        let Some(execution_payload) = params[0].as_object_mut() else { return };
 
-                        let transactions = match match execution_payload.get_mut("transactions") {
+                        let Some(transactions) = match execution_payload.get_mut("transactions") {
                             Some(transactions) => transactions,
                             None => return,
                         }
-                        .as_array_mut()
-                        {
-                            Some(transactions) => transactions,
-                            None => return,
+                        .as_array_mut() else {
+                            return
                         };
 
                         for transaction in transactions {
@@ -665,19 +647,14 @@ where
                             return;
                         }
 
-                        let execution_payload = match params[0].as_object_mut() {
-                            Some(execution_payload) => execution_payload,
-                            None => return,
-                        };
+                        let Some(execution_payload) = params[0].as_object_mut() else { return };
 
-                        let transactions = match match execution_payload.get_mut("txs") {
+                        let Some(transactions) = match execution_payload.get_mut("txs") {
                             Some(transactions) => transactions,
                             None => return,
                         }
-                        .as_array_mut()
-                        {
-                            Some(transactions) => transactions,
-                            None => return,
+                        .as_array_mut() else {
+                            return
                         };
 
                         for transaction in transactions {
@@ -697,12 +674,11 @@ where
                 }
             }
 
-            let result = match match message.get_mut("result") {
+            let Some(result) = (match message.get_mut("result") {
                 Some(result) => result.as_object_mut(),
                 None => return,
-            } {
-                Some(result) => result,
-                None => return,
+            }) else {
+                return
             };
 
             if let Some(execution_payload) = result.get_mut("executionPayload") &&
@@ -1022,8 +998,7 @@ where
                             Ok(mrr_res_body) => {
                                 let size = match mrr_res_body.size() {
                                     BodySize::Sized(size) => size, // Body is always sized
-                                    BodySize::None => 0,
-                                    BodySize::Stream => 0,
+                                    BodySize::None | BodySize::Stream => 0,
                                 };
                                 let info = ProxyHttpResponseInfo::new(
                                     cli_req.info.id,
@@ -1152,7 +1127,7 @@ impl ProxyHttpRequestInfo {
 
         let path_and_query = match req.query_string() {
             "" => path.clone(),
-            val => format!("{}?{}", path, val),
+            val => format!("{path}?{val}"),
         };
 
         Self {
@@ -1187,12 +1162,12 @@ impl ProxyHttpRequestInfo {
     }
 
     #[inline]
-    pub fn path_and_query(&self) -> &str {
+    pub(crate) fn path_and_query(&self) -> &str {
         &self.path_and_query
     }
 
     #[inline]
-    pub fn remote_addr(&self) -> &Option<String> {
+    pub(crate) fn remote_addr(&self) -> &Option<String> {
         &self.remote_addr
     }
 }

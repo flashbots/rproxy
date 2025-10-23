@@ -4,7 +4,7 @@ use clap::Parser;
 use thiserror::Error;
 
 use crate::server::{
-    config::{ConfigLoggingError, ConfigLogging, ConfigMetrics, ConfigMetricsError},
+    config::{ConfigLogging, ConfigLoggingError, ConfigMetrics, ConfigMetricsError},
     proxy::config::{
         ConfigAuthrpc,
         ConfigAuthrpcError,
@@ -59,7 +59,7 @@ impl Config {
 
         if let Some(errs) = res.clone().validate() {
             for err in errs.iter() {
-                eprintln!("fatal: {}", err);
+                eprintln!("fatal: {err}");
             }
             process::exit(1);
         };
