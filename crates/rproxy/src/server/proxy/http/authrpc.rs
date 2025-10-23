@@ -1,7 +1,6 @@
 use crate::{
     jrpc::{JrpcRequestMeta, JrpcRequestMetaMaybeBatch},
     server::proxy::{
-        ProxyInner,
         config::ConfigAuthrpc,
         http::{ProxiedHttpRequest, ProxiedHttpResponse, ProxyHttpInner},
     },
@@ -16,14 +15,12 @@ pub(crate) struct ProxyHttpInnerAuthrpc {
     config: ConfigAuthrpc,
 }
 
-impl ProxyInner for ProxyHttpInnerAuthrpc {
+impl ProxyHttpInner<ConfigAuthrpc> for ProxyHttpInnerAuthrpc {
     #[inline]
     fn name() -> &'static str {
         PROXY_HTTP_INNER_AUTHRPC_NAME
     }
-}
 
-impl ProxyHttpInner<ConfigAuthrpc> for ProxyHttpInnerAuthrpc {
     fn new(config: ConfigAuthrpc) -> Self {
         Self { config }
     }

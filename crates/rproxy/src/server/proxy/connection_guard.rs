@@ -1,10 +1,3 @@
-pub(crate) mod circuit_breaker;
-pub(crate) mod config;
-pub(crate) mod http;
-pub(crate) mod ws;
-
-// ---------------------------------------------------------------------
-
 use std::{
     any::Any,
     sync::{
@@ -19,20 +12,46 @@ use uuid::Uuid;
 
 use crate::server::metrics::{LabelsProxy, Metrics};
 
-// Proxy ---------------------------------------------------------------
+// ProxyConnectionGuard ------------------------------------------------
 
-pub(crate) trait Proxy<P>
-where
-    P: ProxyInner,
-{
-    fn on_connect(
+pub(crate) struct ConnectionGuard {
+    pub id: Uuid,
+    pub remote_addr: Option<String>,
+    pub local_addr: Option<String>,
+
+    proxy: &'static str,
+    metrics: Arc<Metrics>,
+    client_connections_count: Arc<AtomicI64>,
+}
+
+impl ConnectionGuard {
+    fn new(
+        id: Uuid,
+        proxy: &'static str,
+        remote_addr: Option<String>,
+        local_addr: Option<String>,
+        metrics: Arc<Metrics>,
+        client_connections_count: Arc<AtomicI64>,
+    ) -> Self {
+        Self {
+            id,
+            remote_addr,
+            local_addr,
+            proxy,
+            metrics: metrics.clone(),
+            client_connections_count,
+        }
+    }
+
+    pub(crate) fn on_connect(
+        proxy: &'static str,
         metrics: Arc<Metrics>,
         client_connections_count: Arc<AtomicI64>,
     ) -> impl Fn(&dyn Any, &mut Extensions) {
         move |connection, extensions| {
             {
                 let val = client_connections_count.fetch_add(1, Ordering::Relaxed) + 1;
-                let metric_labels = LabelsProxy { proxy: P::name() };
+                let metric_labels = LabelsProxy { proxy };
 
                 metrics.client_connections_active_count.get_or_create(&metric_labels).set(val);
                 metrics.client_connections_established_count.get_or_create(&metric_labels).inc();
@@ -54,32 +73,32 @@ where
                 let remote_addr = match stream.peer_addr() {
                     Ok(local_addr) => Some(local_addr.to_string()),
                     Err(err) => {
-                        warn!(proxy = P::name(), error = ?err, "Failed to get remote address");
+                        warn!(proxy = proxy, error = ?err, "Failed to get remote address");
                         None
                     }
                 };
                 let local_addr = match stream.local_addr() {
                     Ok(local_addr) => Some(local_addr.to_string()),
                     Err(err) => {
-                        warn!(proxy = P::name(), error = ?err, "Failed to get remote address");
+                        warn!(proxy = proxy, error = ?err, "Failed to get remote address");
                         None
                     }
                 };
 
                 debug!(
-                    proxy = P::name(),
+                    proxy = proxy,
                     connection_id = %id,
                     remote_addr = remote_addr.as_ref().map_or("unknown", |v| v.as_str()),
                     local_addr = local_addr.as_ref().map_or("unknown", |v| v.as_str()),
                     "Client connection open"
                 );
 
-                extensions.insert(ProxyConnectionGuard::new(
+                extensions.insert(ConnectionGuard::new(
                     id,
-                    P::name(),
+                    proxy,
                     remote_addr,
                     local_addr,
-                    &metrics,
+                    metrics.clone(),
                     client_connections_count.clone(),
                 ));
             }
@@ -87,55 +106,17 @@ where
     }
 }
 
-// ProxyInner ----------------------------------------------------------
-
-pub(crate) trait ProxyInner: 'static {
-    fn name() -> &'static str;
-}
-
-// ProxyConnectionGuard ------------------------------------------------
-
-pub(crate) struct ProxyConnectionGuard {
-    pub id: Uuid,
-    pub remote_addr: Option<String>,
-    pub local_addr: Option<String>,
-
-    proxy_name: &'static str,
-    metrics: Arc<Metrics>,
-    client_connections_count: Arc<AtomicI64>,
-}
-
-impl ProxyConnectionGuard {
-    fn new(
-        id: Uuid,
-        proxy_name: &'static str,
-        remote_addr: Option<String>,
-        local_addr: Option<String>,
-        metrics: &Arc<Metrics>,
-        client_connections_count: Arc<AtomicI64>,
-    ) -> Self {
-        Self {
-            id,
-            remote_addr,
-            local_addr,
-            proxy_name,
-            metrics: metrics.clone(),
-            client_connections_count,
-        }
-    }
-}
-
-impl Drop for ProxyConnectionGuard {
+impl Drop for ConnectionGuard {
     fn drop(&mut self) {
         let val = self.client_connections_count.fetch_sub(1, Ordering::Relaxed) - 1;
 
-        let metric_labels = LabelsProxy { proxy: self.proxy_name };
+        let metric_labels = LabelsProxy { proxy: self.proxy };
 
         self.metrics.client_connections_active_count.get_or_create(&metric_labels).set(val);
         self.metrics.client_connections_closed_count.get_or_create(&metric_labels).inc();
 
         debug!(
-            proxy = self.proxy_name,
+            proxy = self.proxy,
             connection_id = %self.id,
             remote_addr = self.remote_addr.as_ref().map_or("unknown", |v| v.as_str()),
             local_addr = self.local_addr.as_ref().map_or("unknown", |v| v.as_str()),

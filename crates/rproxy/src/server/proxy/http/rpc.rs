@@ -3,7 +3,6 @@ use tracing::warn;
 use crate::{
     jrpc::{JrpcError, JrpcRequestMeta, JrpcRequestMetaMaybeBatch, JrpcResponseMeta},
     server::proxy::{
-        ProxyInner,
         config::ConfigRpc,
         http::{ProxiedHttpRequest, ProxiedHttpResponse, ProxyHttpInner},
     },
@@ -18,14 +17,12 @@ pub(crate) struct ProxyHttpInnerRpc {
     config: ConfigRpc,
 }
 
-impl ProxyInner for ProxyHttpInnerRpc {
+impl ProxyHttpInner<ConfigRpc> for ProxyHttpInnerRpc {
     #[inline]
     fn name() -> &'static str {
         PROXY_HTTP_INNER_RPC_NAME
     }
-}
 
-impl ProxyHttpInner<ConfigRpc> for ProxyHttpInnerRpc {
     fn new(config: ConfigRpc) -> Self {
         Self { config }
     }

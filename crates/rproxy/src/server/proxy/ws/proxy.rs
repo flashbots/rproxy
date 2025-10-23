@@ -40,8 +40,7 @@ use crate::{
     server::{
         metrics::{LabelsProxyWs, Metrics},
         proxy::{
-            Proxy,
-            ProxyConnectionGuard,
+            ConnectionGuard,
             config::ConfigTls,
             http::ProxyHttpRequestInfo,
             ws::{ProxyWsInner, config::ConfigProxyWs},
@@ -175,7 +174,7 @@ where
                 .wrap(NormalizePath::new(TrailingSlash::Trim))
                 .default_service(web::route().to(Self::receive))
         })
-        .on_connect(Self::on_connect(metrics, client_connections_count))
+        .on_connect(ConnectionGuard::on_connect(P::name(), metrics, client_connections_count))
         .shutdown_signal(canceller.cancelled_owned())
         .workers(workers_count);
 
@@ -248,7 +247,7 @@ where
         cli_req_body: web::Payload,
         this: web::Data<Self>,
     ) -> Result<HttpResponse, actix_web::Error> {
-        let info = ProxyHttpRequestInfo::new(&cli_req, cli_req.conn_data::<ProxyConnectionGuard>());
+        let info = ProxyHttpRequestInfo::new(&cli_req, cli_req.conn_data::<ConnectionGuard>());
 
         let (res, cli_tx, cli_rx) = match actix_ws::handle(&cli_req, cli_req_body) {
             Ok(res) => res,
@@ -1095,13 +1094,6 @@ where
             }
         }
     }
-}
-
-impl<C, P> Proxy<P> for ProxyWs<C, P>
-where
-    C: ConfigProxyWs,
-    P: ProxyWsInner<C>,
-{
 }
 
 // ProxyWsSharedState --------------------------------------------------

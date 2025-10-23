@@ -52,8 +52,7 @@ use crate::{
     server::{
         metrics::{LabelsProxy, LabelsProxyClientInfo, LabelsProxyHttpJrpc, Metrics},
         proxy::{
-            Proxy,
-            ProxyConnectionGuard,
+            ConnectionGuard,
             config::ConfigTls,
             http::{
                 ProxyHttpInner,
@@ -191,7 +190,7 @@ where
                 .wrap(NormalizePath::new(TrailingSlash::Trim))
                 .default_service(web::route().to(Self::receive))
         })
-        .on_connect(Self::on_connect(metrics, client_connections_count))
+        .on_connect(ConnectionGuard::on_connect(P::name(), metrics, client_connections_count))
         .shutdown_signal(canceller.cancelled_owned())
         .workers(workers_count);
 
@@ -313,7 +312,7 @@ where
                 .inc();
         }
 
-        let info = ProxyHttpRequestInfo::new(&cli_req, cli_req.conn_data::<ProxyConnectionGuard>());
+        let info = ProxyHttpRequestInfo::new(&cli_req, cli_req.conn_data::<ConnectionGuard>());
 
         let id = info.id;
         let connection_id = info.connection_id;
@@ -768,13 +767,6 @@ where
     }
 }
 
-impl<C, P> Proxy<P> for ProxyHttp<C, P>
-where
-    C: ConfigProxyHttp,
-    P: ProxyHttpInner<C>,
-{
-}
-
 impl<C, P> Drop for ProxyHttp<C, P>
 where
     C: ConfigProxyHttp,
@@ -1069,7 +1061,7 @@ pub(crate) struct ProxyHttpRequestInfo {
 }
 
 impl ProxyHttpRequestInfo {
-    pub(crate) fn new(req: &HttpRequest, guard: Option<&ProxyConnectionGuard>) -> Self {
+    pub(crate) fn new(req: &HttpRequest, guard: Option<&ConnectionGuard>) -> Self {
         // copy over only non hop-by-hop headers
         let mut headers = HeaderMap::new();
         for (header, value) in req.headers().iter() {

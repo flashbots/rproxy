@@ -20,11 +20,10 @@ use crate::{
     server::{
         metrics::Metrics,
         proxy::{
-            ProxyInner,
             circuit_breaker::CircuitBreaker,
             config::{ConfigAuthrpc, ConfigFlashblocks, ConfigRpc},
-            http::{ProxyHttp, ProxyHttpInnerAuthrpc, ProxyHttpInnerRpc},
-            ws::{ProxyWs, ProxyWsInnerFlashblocks},
+            http::{ProxyHttp, ProxyHttpInner, ProxyHttpInnerAuthrpc, ProxyHttpInnerRpc},
+            ws::{ProxyWs, ProxyWsInner, ProxyWsInnerFlashblocks},
         },
     },
     utils::tls_certificate_validity_timestamps,
@@ -108,7 +107,7 @@ impl Server {
                     .await
                     .inspect_err(|err| {
                         error!(
-                            proxy = ProxyHttpInnerRpc::name(),
+                            proxy = ProxyHttpInnerAuthrpc::name(),
                             error = ?err,
                             "Failed to start http-proxy, terminating...",
                         );
@@ -164,7 +163,7 @@ impl Server {
                     .await
                     .inspect_err(|err| {
                         error!(
-                            proxy = ProxyHttpInnerRpc::name(),
+                            proxy = ProxyWsInnerFlashblocks::name(),
                             error = ?err,
                             "Failed to start websocket-proxy, terminating...",
                         );
