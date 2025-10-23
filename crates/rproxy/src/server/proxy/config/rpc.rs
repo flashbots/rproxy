@@ -130,6 +130,28 @@ pub(crate) struct ConfigRpc {
     )]
     pub(crate) log_sanitise: bool,
 
+    /// max size of rpc requests
+    #[arg(
+        default_value = "16",
+        env = "RPROXY_RPC_MAX_REQUEST_SIZE_MB",
+        help_heading = "rpc",
+        long("rpc-max-request-size-mb"),
+        name("rpc_max_request_size_mb"),
+        value_name = "megabytes"
+    )]
+    pub(crate) max_request_size_mb: usize,
+
+    /// max size of rpc responses
+    #[arg(
+        default_value = "256",
+        env = "RPROXY_RPC_MAX_RESPONSE_SIZE_MB",
+        help_heading = "rpc",
+        long("rpc-max-response-size-mb"),
+        name("rpc_max_response_size_mb"),
+        value_name = "megabytes"
+    )]
+    pub(crate) max_response_size_mb: usize,
+
     /// whether the requests that returned an error from rpc backend should
     /// be mirrored to peers
     #[arg(
@@ -161,6 +183,28 @@ pub(crate) struct ConfigRpc {
     )]
     #[clap(value_enum)]
     pub(crate) mirroring_strategy: ConfigProxyHttpMirroringStrategy,
+
+    /// size of preallocated rpc request buffers
+    #[arg(
+        default_value = "1",
+        env = "RPROXY_RPC_PREALLOCATED_RESPONSE_BUFFER_SIZE_KB",
+        help_heading = "rpc",
+        long("rpc-preallocated-request-buffer-size-kb"),
+        name("rpc_preallocated_request_buffer_size_kb"),
+        value_name = "kilobytes"
+    )]
+    pub(crate) prealloacated_request_buffer_size_kb: usize,
+
+    /// size of preallocated rpc response buffers
+    #[arg(
+        default_value = "256",
+        env = "RPROXY_RPC_PREALLOCATED_RESPONSE_BUFFER_SIZE_KB",
+        help_heading = "rpc",
+        long("rpc-preallocated-response-buffer-size-kb"),
+        name("rpc_preallocated_response_buffer_size_kb"),
+        value_name = "kilobytes"
+    )]
+    pub(crate) prealloacated_response_buffer_size_kb: usize,
 
     /// remove rpc backend from peers
     #[arg(
@@ -336,6 +380,16 @@ impl ConfigProxyHttp for ConfigRpc {
     }
 
     #[inline]
+    fn max_request_size(&self) -> usize {
+        1024 * 1024 * self.max_request_size_mb
+    }
+
+    #[inline]
+    fn max_response_size(&self) -> usize {
+        1024 * 1024 * self.max_response_size_mb
+    }
+
+    #[inline]
     fn mirroring_peer_urls(&self) -> Vec<Url> {
         self.mirroring_peer_urls
             .iter()
@@ -346,6 +400,16 @@ impl ConfigProxyHttp for ConfigRpc {
     #[inline]
     fn mirroring_strategy(&self) -> &ConfigProxyHttpMirroringStrategy {
         &self.mirroring_strategy
+    }
+
+    #[inline]
+    fn prealloacated_request_buffer_size(&self) -> usize {
+        1024 * self.prealloacated_request_buffer_size_kb
+    }
+
+    #[inline]
+    fn prealloacated_response_buffer_size(&self) -> usize {
+        1024 * self.prealloacated_response_buffer_size_kb
     }
 }
 

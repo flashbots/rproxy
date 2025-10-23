@@ -15,8 +15,12 @@ pub(crate) trait ConfigProxyHttp: Clone + Send + Unpin + 'static {
     fn log_proxied_requests(&self) -> bool;
     fn log_proxied_responses(&self) -> bool;
     fn log_sanitise(&self) -> bool;
+    fn max_request_size(&self) -> usize;
+    fn max_response_size(&self) -> usize;
     fn mirroring_peer_urls(&self) -> Vec<Url>;
     fn mirroring_strategy(&self) -> &ConfigProxyHttpMirroringStrategy;
+    fn prealloacated_request_buffer_size(&self) -> usize;
+    fn prealloacated_response_buffer_size(&self) -> usize;
 }
 
 // ConfigProxyHttpMirroringStrategy ------------------------------------

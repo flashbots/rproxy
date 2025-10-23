@@ -63,14 +63,6 @@ pub(crate) struct ConfigFlashblocks {
     )]
     pub(crate) log_backend_messages: bool,
 
-    /// whether to log flashblocks backend messages
-    #[arg(
-        env = "RPROXY_FLASHBLOCKS_LOG_BACKEND_MESSAGES",
-        help_heading = "flashblocks",
-        long("flashblocks-log-backend-messages"),
-        name("flashblocks_log_backend_messages")
-    )]
-
     /// whether to log flashblocks client messages
     #[arg(
         env = "RPROXY_FLASHBLOCKS_LOG_CLIENT_MESSAGES",

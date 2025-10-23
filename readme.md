@@ -110,6 +110,18 @@ authrpc:
 
           [env: RPROXY_AUTHRPC_LOG_SANITISE=]
 
+      --authrpc-max-request-size-mb <megabytes>
+          max size of authrpc requests
+
+          [env: RPROXY_AUTHRPC_MAX_REQUEST_SIZE_MB=]
+          [default: 16]
+
+      --authrpc-max-response-size-mb <megabytes>
+          max size of authrpc responses
+
+          [env: RPROXY_AUTHRPC_MAX_RESPONSE_SIZE_MB=]
+          [default: 256]
+
       --authrpc-mirroring-peer <url>...
           list of authrpc peers urls to mirror the requests to
 
@@ -123,6 +135,18 @@ authrpc:
 
           [env: RPROXY_AUTHRPC_MIRRORING_STRATEGY=]
           [default: fan-out]
+
+      --authrpc-preallocated-request-buffer-size-kb <kilobytes>
+          size of preallocated authrpc request buffers
+
+          [env: RPROXY_AUTHRPC_PREALLOCATED_RESPONSE_BUFFER_SIZE_KB=]
+          [default: 1]
+
+      --authrpc-preallocated-response-buffer-size-kb <kilobytes>
+          size of preallocated authrpc response buffers
+
+          [env: RPROXY_AUTHRPC_PREALLOCATED_RESPONSE_BUFFER_SIZE_KB=]
+          [default: 1]
 
       --authrpc-remove-backend-from-mirroring-peers
           remove authrpc backend from mirroring peers
@@ -283,6 +307,18 @@ rpc:
 
           [env: RPROXY_RPC_LOG_SANITISE=]
 
+      --rpc-max-request-size-mb <megabytes>
+          max size of rpc requests
+
+          [env: RPROXY_RPC_MAX_REQUEST_SIZE_MB=]
+          [default: 16]
+
+      --rpc-max-response-size-mb <megabytes>
+          max size of rpc responses
+
+          [env: RPROXY_RPC_MAX_RESPONSE_SIZE_MB=]
+          [default: 256]
+
       --rpc-mirror-errored-requests
           whether the requests that returned an error from rpc backend should be mirrored
           to peers
@@ -302,6 +338,18 @@ rpc:
 
           [env: RPROXY_RPC_MIRRORING_STRATEGY=]
           [default: fan-out]
+
+      --rpc-preallocated-request-buffer-size-kb <kilobytes>
+          size of preallocated rpc request buffers
+
+          [env: RPROXY_RPC_PREALLOCATED_RESPONSE_BUFFER_SIZE_KB=]
+          [default: 1]
+
+      --rpc-preallocated-response-buffer-size-kb <kilobytes>
+          size of preallocated rpc response buffers
+
+          [env: RPROXY_RPC_PREALLOCATED_RESPONSE_BUFFER_SIZE_KB=]
+          [default: 256]
 
       --rpc-remove-backend-from-mirroring-peers
           remove rpc backend from peers
