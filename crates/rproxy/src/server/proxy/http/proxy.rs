@@ -31,7 +31,7 @@ use awc::{
     ClientResponse,
     Connector,
     body::MessageBody,
-    error::HeaderValue,
+    error::{HeaderValue, PayloadError},
     http::{Method, header::HeaderMap},
 };
 use bytes::Bytes;
@@ -318,7 +318,13 @@ where
         let connection_id = info.connection_id;
 
         let bck_req = this.backend.new_backend_request(&info);
-        let bck_req_body = ProxyHttpRequestBody::new(this.clone(), info, cli_req_body, timestamp);
+        let bck_req_body = ProxyHttpRequestBody::new(
+            this.clone(),
+            info,
+            cli_req_body,
+            this.shared.config().prealloacated_request_buffer_size(),
+            timestamp,
+        );
 
         let bck_res = match bck_req.send_stream(bck_req_body).await {
             Ok(res) => res,
@@ -345,12 +351,14 @@ where
         let status = bck_res.status();
         let mut cli_res = Self::to_client_response(&bck_res);
 
+        let preallocate = this.shared.config().prealloacated_response_buffer_size();
         let bck_body = ProxyHttpResponseBody::new(
             this,
             id,
             status,
             bck_res.headers().clone(),
             bck_res.into_stream(),
+            preallocate,
             timestamp,
         );
 
@@ -1205,6 +1213,7 @@ where
     info: Option<ProxyHttpRequestInfo>,
     start: UtcDateTime,
     body: Vec<u8>,
+    max_size: usize,
 
     #[pin]
     stream: S,
@@ -1216,17 +1225,20 @@ where
     P: ProxyHttpInner<C>,
 {
     fn new(
-        worker: web::Data<ProxyHttp<C, P>>,
+        proxy: web::Data<ProxyHttp<C, P>>,
         info: ProxyHttpRequestInfo,
         body: S,
+        preallocate: usize,
         timestamp: UtcDateTime,
     ) -> Self {
+        let max_size = proxy.shared.config().max_request_size();
         Self {
-            proxy: worker,
+            proxy,
             info: Some(info),
             stream: body,
             start: timestamp,
-            body: Vec::new(), // TODO: preallocate reasonable size
+            body: Vec::with_capacity(preallocate),
+            max_size,
         }
     }
 }
@@ -1234,7 +1246,7 @@ where
 impl<S, E, C, P> Stream for ProxyHttpRequestBody<S, C, P>
 where
     S: Stream<Item = Result<Bytes, E>>,
-    E: Debug,
+    E: From<PayloadError> + Debug,
     C: ConfigProxyHttp,
     P: ProxyHttpInner<C>,
 {
@@ -1247,6 +1259,30 @@ where
             Poll::Pending => Poll::Pending,
 
             Poll::Ready(Some(Ok(chunk))) => {
+                if this.body.len() + chunk.len() > *this.max_size {
+                    let err = format!(
+                        "request is too large: {}+ > {}",
+                        this.body.len() + chunk.len(),
+                        *this.max_size
+                    );
+                    if let Some(info) = mem::take(this.info) {
+                        warn!(
+                            proxy = P::name(),
+                            request_id = %info.id(),
+                            connection_id = %info.connection_id(),
+                            error = err,
+                            "Proxy http request stream error",
+                        );
+                    } else {
+                        warn!(
+                            proxy = P::name(),
+                            error = err,
+                            request_id = "unknown",
+                            "Proxy http request stream error",
+                        );
+                    }
+                    return Poll::Ready(Some(Err(E::from(PayloadError::Overflow))))
+                }
                 this.body.extend_from_slice(&chunk);
                 Poll::Ready(Some(Ok(chunk)))
             }
@@ -1301,6 +1337,7 @@ where
     info: Option<ProxyHttpResponseInfo>,
     start: UtcDateTime,
     body: Vec<u8>,
+    max_size: usize,
 
     #[pin]
     stream: S,
@@ -1317,13 +1354,16 @@ where
         status: StatusCode,
         headers: HeaderMap,
         body: S,
+        preallocate: usize,
         timestamp: UtcDateTime,
     ) -> Self {
+        let max_size = proxy.shared.config().max_response_size();
         Self {
             proxy,
             stream: body,
             start: timestamp,
-            body: Vec::new(), // TODO: preallocate reasonable size
+            body: Vec::with_capacity(preallocate),
+            max_size,
             info: Some(ProxyHttpResponseInfo::new(id, status, headers)),
         }
     }
@@ -1332,7 +1372,7 @@ where
 impl<S, E, C, P> Stream for ProxyHttpResponseBody<S, C, P>
 where
     S: Stream<Item = Result<Bytes, E>>,
-    E: Debug,
+    E: From<PayloadError> + Debug,
     C: ConfigProxyHttp,
     P: ProxyHttpInner<C>,
 {
@@ -1345,6 +1385,29 @@ where
             Poll::Pending => Poll::Pending,
 
             Poll::Ready(Some(Ok(chunk))) => {
+                if this.body.len() + chunk.len() > *this.max_size {
+                    let err = format!(
+                        "response is too large: {}+ > {}",
+                        this.body.len() + chunk.len(),
+                        *this.max_size
+                    );
+                    if let Some(info) = mem::take(this.info) {
+                        warn!(
+                            proxy = P::name(),
+                            request_id = %info.id(),
+                            error = err,
+                            "Proxy http response stream error",
+                        );
+                    } else {
+                        warn!(
+                            proxy = P::name(),
+                            error = err,
+                            request_id = "unknown",
+                            "Proxy http response stream error",
+                        );
+                    }
+                    return Poll::Ready(Some(Err(E::from(PayloadError::Overflow))))
+                }
                 this.body.extend_from_slice(&chunk);
                 Poll::Ready(Some(Ok(chunk)))
             }
