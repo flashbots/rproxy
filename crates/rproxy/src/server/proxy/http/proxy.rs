@@ -375,14 +375,14 @@ where
 
     fn postprocess_backend_response(&self, bck_res: ProxiedHttpResponse) {
         let Some((_, cli_req)) = self.requests.remove_sync(&bck_res.info.id) else {
-                error!(
-                    proxy = P::name(),
-                    request_id = %bck_res.info.id,
-                    worker_id = %self.id,
-                    "Proxied http response for unmatching request",
-                );
-                return;
-            };
+            error!(
+                proxy = P::name(),
+                request_id = %bck_res.info.id,
+                worker_id = %self.id,
+                "Proxied http response for unmatching request",
+            );
+            return;
+        };
 
         // hand over to postprocessor asynchronously so that we can return the
         // response to the client as early as possible
@@ -597,7 +597,9 @@ where
                     Some(params) => params,
                     None => return,
                 }
-                .as_array_mut() else { return };
+                .as_array_mut() else {
+                    return
+                };
 
                 match method.as_str() {
                     "engine_forkchoiceUpdatedV3" => {
@@ -611,7 +613,9 @@ where
                             Some(transactions) => transactions,
                             None => return,
                         }
-                        .as_array_mut() else { return };
+                        .as_array_mut() else {
+                            return
+                        };
 
                         for transaction in transactions {
                             raw_transaction_to_hash(transaction);
@@ -629,7 +633,9 @@ where
                             Some(transactions) => transactions,
                             None => return,
                         }
-                        .as_array_mut() else { return };
+                        .as_array_mut() else {
+                            return
+                        };
 
                         for transaction in transactions {
                             raw_transaction_to_hash(transaction);
@@ -647,7 +653,9 @@ where
                             Some(transactions) => transactions,
                             None => return,
                         }
-                        .as_array_mut() else { return };
+                        .as_array_mut() else {
+                            return
+                        };
 
                         for transaction in transactions {
                             raw_transaction_to_hash(transaction);
@@ -669,7 +677,9 @@ where
             let Some(result) = (match message.get_mut("result") {
                 Some(result) => result.as_object_mut(),
                 None => return,
-            }) else { return };
+            }) else {
+                return
+            };
 
             if let Some(execution_payload) = result.get_mut("executionPayload") &&
                 let Some(transactions) = execution_payload.get_mut("transactions") &&

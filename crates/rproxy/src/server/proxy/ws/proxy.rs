@@ -1304,7 +1304,9 @@ impl ProxyWsPing {
 
         let id = Uuid::from_u128(bytes.get_u128());
         let connection_id = Uuid::from_u128(bytes.get_u128());
-        let Ok(timestamp) = UtcDateTime::from_unix_timestamp_nanos(bytes.get_i128()) else { return None };
+        let Ok(timestamp) = UtcDateTime::from_unix_timestamp_nanos(bytes.get_i128()) else {
+            return None
+        };
 
         Some(Self { id, connection_id, timestamp })
     }
