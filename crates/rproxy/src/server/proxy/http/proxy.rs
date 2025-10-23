@@ -191,7 +191,7 @@ where
                 .wrap(NormalizePath::new(TrailingSlash::Trim))
                 .default_service(web::route().to(Self::receive))
         })
-        .on_connect(Self::on_connect(metrics, client_connections_count))
+        .on_connect(Self::on_connect(P::name(), metrics, client_connections_count))
         .shutdown_signal(canceller.cancelled_owned())
         .workers(workers_count);
 
@@ -768,7 +768,7 @@ where
     }
 }
 
-impl<C, P> Proxy<P> for ProxyHttp<C, P>
+impl<C, P> Proxy for ProxyHttp<C, P>
 where
     C: ConfigProxyHttp,
     P: ProxyHttpInner<C>,

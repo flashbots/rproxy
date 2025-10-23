@@ -21,18 +21,16 @@ use crate::server::metrics::{LabelsProxy, Metrics};
 
 // Proxy ---------------------------------------------------------------
 
-pub(crate) trait Proxy<P>
-where
-    P: ProxyInner,
-{
+pub(crate) trait Proxy {
     fn on_connect(
+        proxy: &'static str,
         metrics: Arc<Metrics>,
         client_connections_count: Arc<AtomicI64>,
     ) -> impl Fn(&dyn Any, &mut Extensions) {
         move |connection, extensions| {
             {
                 let val = client_connections_count.fetch_add(1, Ordering::Relaxed) + 1;
-                let metric_labels = LabelsProxy { proxy: P::name() };
+                let metric_labels = LabelsProxy { proxy };
 
                 metrics.client_connections_active_count.get_or_create(&metric_labels).set(val);
                 metrics.client_connections_established_count.get_or_create(&metric_labels).inc();
@@ -54,20 +52,20 @@ where
                 let remote_addr = match stream.peer_addr() {
                     Ok(local_addr) => Some(local_addr.to_string()),
                     Err(err) => {
-                        warn!(proxy = P::name(), error = ?err, "Failed to get remote address");
+                        warn!(proxy = proxy, error = ?err, "Failed to get remote address");
                         None
                     }
                 };
                 let local_addr = match stream.local_addr() {
                     Ok(local_addr) => Some(local_addr.to_string()),
                     Err(err) => {
-                        warn!(proxy = P::name(), error = ?err, "Failed to get remote address");
+                        warn!(proxy = proxy, error = ?err, "Failed to get remote address");
                         None
                     }
                 };
 
                 debug!(
-                    proxy = P::name(),
+                    proxy = proxy,
                     connection_id = %id,
                     remote_addr = remote_addr.as_ref().map_or("unknown", |v| v.as_str()),
                     local_addr = local_addr.as_ref().map_or("unknown", |v| v.as_str()),
@@ -76,7 +74,7 @@ where
 
                 extensions.insert(ProxyConnectionGuard::new(
                     id,
-                    P::name(),
+                    proxy,
                     remote_addr,
                     local_addr,
                     &metrics,
@@ -85,12 +83,6 @@ where
             }
         }
     }
-}
-
-// ProxyInner ----------------------------------------------------------
-
-pub(crate) trait ProxyInner: 'static {
-    fn name() -> &'static str;
 }
 
 // ProxyConnectionGuard ------------------------------------------------
