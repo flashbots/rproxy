@@ -131,6 +131,28 @@ pub(crate) struct ConfigAuthrpc {
     )]
     pub(crate) log_sanitise: bool,
 
+    /// max size of authrpc requests
+    #[arg(
+        default_value = "16",
+        env = "RPROXY_AUTHRPC_MAX_REQUEST_SIZE_MB",
+        help_heading = "authrpc",
+        long("authrpc-max-request-size-mb"),
+        name("authrpc_max_request_size_mb"),
+        value_name = "megabytes"
+    )]
+    pub(crate) max_request_size_mb: usize,
+
+    /// max size of authrpc responses
+    #[arg(
+        default_value = "256",
+        env = "RPROXY_AUTHRPC_MAX_RESPONSE_SIZE_MB",
+        help_heading = "authrpc",
+        long("authrpc-max-response-size-mb"),
+        name("authrpc_max_response_size_mb"),
+        value_name = "megabytes"
+    )]
+    pub(crate) max_response_size_mb: usize,
+
     /// list of authrpc peers urls to mirror the requests to
     #[arg(
         env="RPROXY_AUTHRPC_MIRRORING_PEERS",
@@ -152,6 +174,28 @@ pub(crate) struct ConfigAuthrpc {
     )]
     #[clap(value_enum)]
     pub(crate) mirroring_strategy: ConfigProxyHttpMirroringStrategy,
+
+    /// size of preallocated authrpc request buffers
+    #[arg(
+        default_value = "1",
+        env = "RPROXY_AUTHRPC_PREALLOCATED_RESPONSE_BUFFER_SIZE_KB",
+        help_heading = "authrpc",
+        long("authrpc-preallocated-request-buffer-size-kb"),
+        name("authrpc_preallocated_request_buffer_size_kb"),
+        value_name = "kilobytes"
+    )]
+    pub(crate) prealloacated_request_buffer_size_kb: usize,
+
+    /// size of preallocated authrpc response buffers
+    #[arg(
+        default_value = "1",
+        env = "RPROXY_AUTHRPC_PREALLOCATED_RESPONSE_BUFFER_SIZE_KB",
+        help_heading = "authrpc",
+        long("authrpc-preallocated-response-buffer-size-kb"),
+        name("authrpc_preallocated_response_buffer_size_kb"),
+        value_name = "kilobytes"
+    )]
+    pub(crate) prealloacated_response_buffer_size_kb: usize,
 
     /// remove authrpc backend from mirroring peers
     #[arg(
@@ -330,6 +374,16 @@ impl ConfigProxyHttp for ConfigAuthrpc {
     }
 
     #[inline]
+    fn max_request_size(&self) -> usize {
+        1024 * 1024 * self.max_request_size_mb
+    }
+
+    #[inline]
+    fn max_response_size(&self) -> usize {
+        1024 * 1024 * self.max_response_size_mb
+    }
+
+    #[inline]
     fn mirroring_peer_urls(&self) -> Vec<Url> {
         self.mirroring_peer_urls
             .iter()
@@ -340,6 +394,16 @@ impl ConfigProxyHttp for ConfigAuthrpc {
     #[inline]
     fn mirroring_strategy(&self) -> &ConfigProxyHttpMirroringStrategy {
         &self.mirroring_strategy
+    }
+
+    #[inline]
+    fn prealloacated_request_buffer_size(&self) -> usize {
+        1024 * self.prealloacated_request_buffer_size_kb
+    }
+
+    #[inline]
+    fn prealloacated_response_buffer_size(&self) -> usize {
+        1024 * self.prealloacated_response_buffer_size_kb
     }
 }
 
