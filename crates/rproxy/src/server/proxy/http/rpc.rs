@@ -27,6 +27,7 @@ impl ProxyHttpInner<ConfigRpc> for ProxyHttpInnerRpc {
         Self { config }
     }
 
+    #[inline]
     fn config(&self) -> &ConfigRpc {
         &self.config
     }
@@ -34,7 +35,7 @@ impl ProxyHttpInner<ConfigRpc> for ProxyHttpInnerRpc {
     fn should_mirror(
         &self,
         jrpc_req: &JrpcRequestMetaMaybeBatch,
-        _: &ProxiedHttpRequest,
+        http_req: &ProxiedHttpRequest,
         http_res: &ProxiedHttpResponse,
     ) -> bool {
         fn should_mirror(
@@ -79,7 +80,13 @@ impl ProxyHttpInner<ConfigRpc> for ProxyHttpInnerRpc {
                 ) {
                     Ok(jrpc_response) => jrpc_response,
                     Err(err) => {
-                        warn!(proxy = Self::name(), error = ?err, "Failed to parse json-rpc response");
+                        warn!(
+                            proxy = Self::name(),
+                            request_id = %http_req.info().id(),
+                            connection_id = %http_req.info().conn_id(),
+                            error = ?err,
+                            "Failed to parse json-rpc response",
+                        );
                         vec![JrpcResponseMeta { error: Some(JrpcError {}) }; jrpc_req_batch.len()]
                     }
                 };
@@ -87,6 +94,8 @@ impl ProxyHttpInner<ConfigRpc> for ProxyHttpInnerRpc {
                 if jrpc_res_batch.len() != jrpc_req_batch.len() {
                     warn!(
                         proxy = Self::name(),
+                        request_id = %http_req.info().id(),
+                        connection_id = %http_req.info().conn_id(),
                         "A response to jrpc-batch has mismatching count of objects (want: {}, got: {})",
                         jrpc_req_batch.len(),
                         jrpc_res_batch.len(),

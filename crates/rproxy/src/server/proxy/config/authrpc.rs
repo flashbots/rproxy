@@ -52,6 +52,16 @@ pub(crate) struct ConfigAuthrpc {
     )]
     pub(crate) backend_timeout: Duration,
 
+    /// whether authrpc proxy should deduplicate incoming fcus w/o payload
+    /// (mitigates fcu avalanche issue)
+    #[arg(
+        env = "RPROXY_AUTHRPC_DEDUPLICATE_FCUS_WO_PAYLOAD",
+        help_heading = "authrpc",
+        long("authrpc-deduplicate-fcus-wo-payload"),
+        name("authrpc_deduplicate_fcus_wo_payload")
+    )]
+    pub(crate) deduplicate_fcus_wo_payload: bool,
+
     /// enable authrpc proxy
     #[arg(
         env = "RPROXY_AUTHRPC_ENABLED",

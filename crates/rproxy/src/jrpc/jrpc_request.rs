@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 
+use alloy_json_rpc::Id;
 use serde::Deserialize;
 
 // JrpcRequestMeta -----------------------------------------------------
@@ -12,11 +13,20 @@ const JRPC_METHOD_FCUV3_WITH_PAYLOAD: Cow<'static, str> =
     Cow::Borrowed("engine_forkchoiceUpdatedV3_withPayload");
 
 pub(crate) struct JrpcRequestMeta {
+    id: Id,
+
     method: Cow<'static, str>,
     method_enriched: Cow<'static, str>,
+
+    params: Vec<serde_json::Value>,
 }
 
 impl JrpcRequestMeta {
+    #[inline]
+    pub(crate) fn id(&self) -> &Id {
+        &self.id
+    }
+
     #[inline]
     pub(crate) fn method(&self) -> Cow<'static, str> {
         self.method.clone()
@@ -25,6 +35,11 @@ impl JrpcRequestMeta {
     #[inline]
     pub(crate) fn method_enriched(&self) -> Cow<'static, str> {
         self.method_enriched.clone()
+    }
+
+    #[inline]
+    pub(crate) fn params(&self) -> &Vec<serde_json::Value> {
+        &self.params
     }
 }
 
@@ -35,6 +50,7 @@ impl<'a> Deserialize<'a> for JrpcRequestMeta {
     {
         #[derive(Deserialize)]
         struct JrpcRequestMetaWire {
+            id: Id,
             method: Cow<'static, str>,
             params: Vec<serde_json::Value>,
         }
@@ -49,7 +65,12 @@ impl<'a> Deserialize<'a> for JrpcRequestMeta {
         }
 
         if params_count < 2 {
-            return Ok(Self { method: wire.method.clone(), method_enriched: wire.method.clone() });
+            return Ok(Self {
+                id: wire.id,
+                method: wire.method.clone(),
+                method_enriched: wire.method.clone(),
+                params: wire.params,
+            });
         }
 
         let method_enriched = match wire.method.as_ref() {
@@ -60,7 +81,7 @@ impl<'a> Deserialize<'a> for JrpcRequestMeta {
             _ => wire.method.clone(),
         };
 
-        Ok(Self { method: wire.method, method_enriched })
+        Ok(Self { id: wire.id, method: wire.method, method_enriched, params: wire.params })
     }
 }
 
