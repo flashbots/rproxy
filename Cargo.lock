@@ -3107,6 +3107,7 @@ dependencies = [
  "pin-project",
  "pnet",
  "prometheus-client",
+ "rustc-hash",
  "rustls",
  "rustls-pemfile",
  "scc",
