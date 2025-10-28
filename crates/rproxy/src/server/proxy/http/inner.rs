@@ -13,6 +13,17 @@ where
     fn new(config: C) -> Self;
     fn config(&self) -> &C;
 
+    fn might_intercept(&self) -> bool {
+        false
+    }
+
+    fn should_intercept(
+        &self,
+        _: &JrpcRequestMetaMaybeBatch,
+    ) -> Option<Result<actix_web::HttpResponse, actix_web::Error>> {
+        None
+    }
+
     fn should_mirror(
         &self,
         jrpc_req: &JrpcRequestMetaMaybeBatch,

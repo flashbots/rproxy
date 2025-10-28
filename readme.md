@@ -67,6 +67,12 @@ authrpc:
           [env: RPROXY_AUTHRPC_BACKEND_TIMEOUT=]
           [default: 30s]
 
+      --authrpc-deduplicate-fcus-wo-payload
+          whether authrpc proxy should deduplicate incoming fcus w/o payload (mitigates
+          fcu avalanche issue)
+
+          [env: RPROXY_AUTHRPC_DEDUPLICATE_FCUS_WO_PAYLOAD=]
+
       --authrpc-enabled
           enable authrpc proxy
 
@@ -214,8 +220,7 @@ flashblocks:
           [env: RPROXY_FLASHBLOCKS_LOG_BACKEND_MESSAGES=]
 
       --flashblocks-log-client-messages
-          whether to log flashblocks backend messages whether to log flashblocks client
-          messages
+          whether to log flashblocks client messages
 
           [env: RPROXY_FLASHBLOCKS_LOG_CLIENT_MESSAGES=]
 

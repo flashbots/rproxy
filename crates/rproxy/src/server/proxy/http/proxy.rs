@@ -314,6 +314,19 @@ where
 
         let info = ProxyHttpRequestInfo::new(&clnt_req, clnt_req.conn_data::<ConnectionGuard>());
 
+        if this.shared.inner.might_intercept() {
+            Self::send_to_backend_and_maybe_intercept(this, info, clnt_req_body, timestamp).await
+        } else {
+            Self::stream_to_backend(this, info, clnt_req_body, timestamp).await
+        }
+    }
+
+    async fn stream_to_backend(
+        this: web::Data<Self>,
+        info: ProxyHttpRequestInfo,
+        clnt_req_body: web::Payload,
+        timestamp: UtcDateTime,
+    ) -> Result<HttpResponse, actix_web::Error> {
         let req_id = info.req_id;
         let conn_id = info.conn_id;
 
@@ -327,7 +340,8 @@ where
         );
 
         let bknd_res = match bknd_req.send_stream(bknd_req_body).await {
-            Ok(res) => res,
+            Ok(bknd_res) => bknd_res,
+
             Err(err) => {
                 warn!(
                     proxy = P::name(),
@@ -347,7 +361,156 @@ where
             }
         };
 
+        Self::stream_to_client(this, req_id, conn_id, bknd_res)
+    }
+
+    async fn send_to_backend_and_maybe_intercept(
+        this: web::Data<Self>,
+        info: ProxyHttpRequestInfo,
+        clnt_req_body: web::Payload,
+        timestamp: UtcDateTime,
+    ) -> Result<HttpResponse, actix_web::Error> {
+        let req_id = info.req_id;
+        let conn_id = info.conn_id;
+
+        let body =
+            match clnt_req_body.to_bytes_limited(this.shared.config().max_request_size()).await {
+                Ok(Ok(body)) => body,
+
+                Ok(Err(err)) => {
+                    warn!(
+                        proxy = P::name(),
+                        request_id = %req_id,
+                        connection_id = %conn_id,
+                        worker_id = %this.id,
+                        backend_url = %this.backend.url,
+                        error = ?err,
+                        "Failed to proxy a request",
+                    );
+                    this.shared
+                        .metrics
+                        .http_proxy_failure_count
+                        .get_or_create(&LabelsProxy { proxy: P::name() })
+                        .inc();
+                    return Ok(HttpResponse::BadGateway().body(format!("Backend error: {err:?}")));
+                }
+
+                Err(_) => {
+                    let err = format!(
+                        "request is too large: ?+ > {}",
+                        this.shared.config().max_request_size(),
+                    );
+                    warn!(
+                        proxy = P::name(),
+                        request_id = %req_id,
+                        connection_id = %conn_id,
+                        worker_id = %this.id,
+                        backend_url = %this.backend.url,
+                        error = ?err,
+                        "Failed to proxy a request",
+                    );
+                    this.shared
+                        .metrics
+                        .http_proxy_failure_count
+                        .get_or_create(&LabelsProxy { proxy: P::name() })
+                        .inc();
+                    return Ok(HttpResponse::PayloadTooLarge().finish());
+                }
+            };
+        let size = body.len();
+
+        let (decompressed_body, decompressed_size) =
+            decompress(body.clone(), size, info.content_encoding());
+
+        match serde_json::from_slice::<JrpcRequestMetaMaybeBatch>(&decompressed_body) {
+            Ok(jrpc) => {
+                if let Some(res) = this.shared.inner.should_intercept(&jrpc) {
+                    let json_req = if this.shared.config().log_proxied_requests() {
+                        Loggable(&Self::maybe_sanitise(
+                            this.shared.config().log_sanitise(),
+                            serde_json::from_slice(&decompressed_body).unwrap_or_default(),
+                        ))
+                    } else {
+                        Loggable(&serde_json::Value::Null)
+                    };
+                    info!(
+                        proxy = P::name(),
+                        request_id = %req_id,
+                        connection_id = %conn_id,
+                        worker_id = %this.id,
+                        jrpc_method = %jrpc.method_enriched(),
+                        remote_addr = info.remote_addr,
+                        ts_request_received = timestamp.format(&Iso8601::DEFAULT).unwrap_or_default(),
+                        json_request = tracing::field::valuable(&json_req),
+                        "Intercepted a request",
+                    );
+
+                    return res
+                }
+            }
+
+            Err(err) => {
+                warn!(
+                    proxy = P::name(),
+                    request_id = %req_id,
+                    connection_id = %conn_id,
+                    worker_id = %this.id,
+                    error = ?err,
+                    "Failed to parse json-rpc request",
+                );
+            }
+        }
+
+        let req = ProxiedHttpRequest {
+            info,
+            body,
+            size,
+            decompressed_body,
+            decompressed_size,
+            start: timestamp,
+            end: UtcDateTime::now(),
+        };
+
+        let bknd_req = this.backend.new_backend_request(&req.info);
+        let bknd_res = match bknd_req.send_body(req.body.clone()).await {
+            Ok(bknd_res) => bknd_res,
+
+            Err(err) => {
+                warn!(
+                    proxy = P::name(),
+                    request_id = %req_id,
+                    connection_id = %conn_id,
+                    worker_id = %this.id,
+                    backend_url = %this.backend.url,
+                    error = ?err,
+                    "Failed to proxy a request",
+                );
+                this.shared
+                    .metrics
+                    .http_proxy_failure_count
+                    .get_or_create(&LabelsProxy { proxy: P::name() })
+                    .inc();
+
+                return Ok(HttpResponse::BadGateway().body(format!("Backend error: {err:?}")));
+            }
+        };
+
+        this.postprocess_client_request(req);
+
+        Self::stream_to_client(this, req_id, conn_id, bknd_res)
+    }
+
+    fn stream_to_client<S>(
+        this: web::Data<Self>,
+        req_id: Uuid,
+        conn_id: Uuid,
+        bknd_res: ClientResponse<S>,
+    ) -> Result<HttpResponse, actix_web::Error>
+    where
+        S: Stream<Item = Result<Bytes, PayloadError>> + Unpin + 'static,
+    {
         let timestamp = UtcDateTime::now();
+
         let status = bknd_res.status();
         let mut clnt_res = Self::to_client_response(&bknd_res);
 
@@ -500,22 +663,28 @@ where
     ) {
         let config = inner.config();
 
-        let json_req = if config.log_proxied_requests() {
-            Loggable(&Self::maybe_sanitise(
-                config.log_sanitise(),
-                serde_json::from_slice(&req.decompressed_body).unwrap_or_default(),
-            ))
+        let (json_req, http_req) = if config.log_proxied_requests() {
+            serde_json::from_slice(&req.decompressed_body).map_or(
+                (
+                    serde_json::Value::Null,
+                    std::str::from_utf8(&req.decompressed_body).unwrap_or_default(),
+                ),
+                |json_req| (json_req, ""),
+            )
         } else {
-            Loggable(&serde_json::Value::Null)
+            (serde_json::Value::Null, "")
         };
 
-        let json_res = if config.log_proxied_responses() {
-            Loggable(&Self::maybe_sanitise(
-                config.log_sanitise(),
-                serde_json::from_slice(&res.decompressed_body).unwrap_or_default(),
-            ))
+        let (json_res, http_res) = if config.log_proxied_responses() {
+            serde_json::from_slice(&res.decompressed_body).map_or(
+                (
+                    serde_json::Value::Null,
+                    std::str::from_utf8(&res.decompressed_body).unwrap_or_default(),
+                ),
+                |json_res| (json_res, ""),
+            )
         } else {
-            Loggable(&serde_json::Value::Null)
+            (serde_json::Value::Null, "")
         };
 
         info!(
@@ -529,8 +698,10 @@ where
             ts_request_received = req.start().format(&Iso8601::DEFAULT).unwrap_or_default(),
             latency_backend = (res.start() - req.end()).as_seconds_f64(),
             latency_total = (res.end() - req.start()).as_seconds_f64(),
-            json_request = tracing::field::valuable(&json_req),
-            json_response = tracing::field::valuable(&json_res),
+            json_request = tracing::field::valuable(&Loggable(&Self::maybe_sanitise(config.log_sanitise(), json_req))),
+            json_response = tracing::field::valuable(&Loggable(&Self::maybe_sanitise(config.log_sanitise(), json_res))),
+            http_request = http_req,
+            http_response = http_res,
             "Proxied request"
         );
     }
@@ -541,22 +712,28 @@ where
         worker_id: Uuid,
         config: &C,
     ) {
-        let json_req = if config.log_mirrored_requests() {
-            Loggable(&Self::maybe_sanitise(
-                config.log_sanitise(),
-                serde_json::from_slice(&req.decompressed_body).unwrap_or_default(),
-            ))
+        let (json_req, http_req) = if config.log_mirrored_requests() {
+            serde_json::from_slice(&req.decompressed_body).map_or(
+                (
+                    serde_json::Value::Null,
+                    std::str::from_utf8(&req.decompressed_body).unwrap_or_default(),
+                ),
+                |json_req| (json_req, ""),
+            )
         } else {
-            Loggable(&serde_json::Value::Null)
+            (serde_json::Value::Null, "")
         };
 
-        let json_res = if config.log_mirrored_responses() {
-            Loggable(&Self::maybe_sanitise(
-                config.log_sanitise(),
-                serde_json::from_slice(&res.decompressed_body).unwrap_or_default(),
-            ))
+        let (json_res, http_res) = if config.log_mirrored_responses() {
+            serde_json::from_slice(&res.decompressed_body).map_or(
+                (
+                    serde_json::Value::Null,
+                    std::str::from_utf8(&res.decompressed_body).unwrap_or_default(),
+                ),
+                |json_res| (json_res, ""),
+            )
         } else {
-            Loggable(&serde_json::Value::Null)
+            (serde_json::Value::Null, "")
         };
 
         info!(
@@ -570,8 +747,10 @@ where
             ts_request_received = req.start().format(&Iso8601::DEFAULT).unwrap_or_default(),
             latency_backend = (res.start() - req.end()).as_seconds_f64(),
             latency_total = (res.end() - req.start()).as_seconds_f64(),
-            json_request = tracing::field::valuable(&json_req),
-            json_response = tracing::field::valuable(&json_res),
+            json_request = tracing::field::valuable(&Loggable(&Self::maybe_sanitise(config.log_sanitise(), json_req))),
+            json_response = tracing::field::valuable(&Loggable(&Self::maybe_sanitise(config.log_sanitise(), json_res))),
+            http_request = http_req,
+            http_response = http_res,
             "Mirrored request"
         );
     }
