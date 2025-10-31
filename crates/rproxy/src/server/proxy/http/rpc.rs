@@ -43,7 +43,10 @@ impl ProxyHttpInner<ConfigRpc> for ProxyHttpInnerRpc {
             jrpc_res: &JrpcResponseMeta,
             mirror_errored_requests: bool,
         ) -> bool {
-            if !matches!(jrpc_req.method().as_ref(), "eth_sendRawTransaction" | "eth_sendBundle") {
+            if !matches!(
+                jrpc_req.method().as_ref(),
+                "eth_sendRawTransaction" | "eth_sendBundle" | "auction_submitBackrun"
+            ) {
                 return false;
             }
 
