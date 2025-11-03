@@ -1276,7 +1276,7 @@ impl ProxyHttpRequestInfo {
         }
 
         // set x-forwarded-proto if it's not already set
-        if req.connection_info().scheme() != "" &&
+        if !req.connection_info().scheme().is_empty() &&
             req.headers().get(header::X_FORWARDED_PROTO).is_none() &&
             let Ok(forwarded_proto) = HeaderValue::from_str(req.connection_info().scheme())
         {
@@ -1284,9 +1284,9 @@ impl ProxyHttpRequestInfo {
         }
 
         // set x-forwarded-host if it's not already set
-        if req.connection_info().scheme() != "" &&
+        if !req.connection_info().host().is_empty() &&
             req.headers().get(header::X_FORWARDED_HOST).is_none() &&
-            let Ok(forwarded_host) = HeaderValue::from_str(req.connection_info().scheme())
+            let Ok(forwarded_host) = HeaderValue::from_str(req.connection_info().host())
         {
             headers.insert(header::X_FORWARDED_HOST, forwarded_host);
         }
