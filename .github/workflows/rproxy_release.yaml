@@ -100,44 +100,8 @@ jobs:
 
           . $HOME/.cargo/env
 
-          export CARGO_INCREMENTAL=0
-          export CFLAGS="-D__TIME__=\"\" -D__DATE__=\"\""
-          export CXXFLAGS="-D__TIME__=\"\" -D__DATE__=\"\""
-          export LC_ALL=C
-          export SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)
-          export TZ=UTC
-
-          export RUSTFLAGS="\
-            --cfg tracing_unstable \
-            -C metadata=host \
-          "
-
-          export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="\
-            --cfg tracing_unstable \
-            --remap-path-prefix /app=. \
-            -C codegen-units=1 \
-            -C embed-bitcode=no \
-            -C link-arg=-static-libgcc \
-            -C link-arg=-Wl,--build-id=none \
-            -C metadata=target \
-            -C target-feature=+crt-static \
-          "
-
-          export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS="\
-            --cfg tracing_unstable \
-            --remap-path-prefix /app=. \
-            -C codegen-units=1 \
-            -C embed-bitcode=no \
-            -C link-arg=-static-libgcc \
-            -C link-arg=-Wl,--build-id=none \
-            -C metadata=target \
-            -C target-feature=+crt-static \
-          "
-
-          cargo build --package rproxy \
-            --locked \
-            --release \
-            --target ${{ matrix.configs.target }}
+          TARGET="${{ matrix.configs.target }}" \
+          ./build.sh
 
       - name: upload the binary artifact
         uses: actions/upload-artifact@v4
