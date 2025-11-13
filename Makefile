@@ -2,7 +2,7 @@ SHELL := /bin/bash
 
 .PHONY: build
 build:
-	@cargo --verbose build
+	@./build.sh
 
 .PHONY: fmt
 fmt:
