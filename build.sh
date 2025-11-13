@@ -7,7 +7,7 @@ export LC_ALL=C
 export SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)
 export TZ=UTC
 
-TARGET=${TARGET:-x86_64-unknown-linux-gnu}
+TARGET=${TARGET:-$( rustc --print host-tuple )}
 
 export RUSTFLAGS="\
   --cfg tracing_unstable \
