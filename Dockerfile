@@ -18,13 +18,13 @@ WORKDIR /app
 COPY . .
 COPY ./.cargo ./
 
-RUN TARGET=$( rustup target list --installed ) \
-    ./build.sh
+RUN ./build.sh
+RUN cp target/$( rustc --print host-tuple )/release/rproxy target/rproxy
 
 FROM gcr.io/distroless/cc-debian12 AS runtime
 
 WORKDIR /app
 
-COPY --from=builder /app/target/release/rproxy ./
+COPY --from=builder /app/target/rproxy ./
 
 ENTRYPOINT [ "/app/rproxy" ]
