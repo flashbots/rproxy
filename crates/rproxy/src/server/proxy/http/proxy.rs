@@ -198,13 +198,14 @@ where
             let cert = tls.certificate().clone();
             let key = tls.key().clone_key();
 
-            proxy.listen_rustls_0_23(
-                listener,
-                rustls::ServerConfig::builder()
-                    .with_no_client_auth()
-                    .with_single_cert(cert, key)
-                    .unwrap(), // safety: verified on start
-            )
+            let mut config = rustls::ServerConfig::builder()
+                .with_no_client_auth()
+                .with_single_cert(cert, key)
+                .unwrap(); // safety: verified on start
+
+            config.alpn_protocols = vec![b"http/1.1".to_vec()];
+
+            proxy.listen_rustls_0_23(listener, config)
         } else {
             proxy.listen(listener)
         } {
