@@ -697,7 +697,7 @@ where
                                 .ws_latency_client
                                 .get_or_create(&LabelsProxyWs {
                                     proxy: P::name(),
-                                    destination: WS_LABEL_BKND,
+                                    destination: WS_LABEL_CLNT,
                                 })
                                 .record(
                                     (1000000.0 * (timestamp - pong.timestamp).as_seconds_f64() /
