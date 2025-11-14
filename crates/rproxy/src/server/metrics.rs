@@ -222,7 +222,7 @@ impl Metrics {
 
         this.registry.register_with_unit(
             "ws_latency_client",
-            "round-trip-time of websocket pings to backend divided by 2",
+            "round-trip-time of websocket pings to client divided by 2",
             Unit::Other(String::from("nanoseconds")),
             this.ws_latency_client.clone(),
         );

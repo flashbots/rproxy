@@ -49,7 +49,7 @@ impl ConfigTls {
         let mut errs: Vec<ConfigTlsError> = vec![];
 
         let mut cert: Option<Vec<CertificateDer>> = None;
-        let key: Option<PrivateKeyDer> = None;
+        let mut key: Option<PrivateKeyDer> = None;
 
         // certificate
         {
@@ -93,6 +93,12 @@ impl ConfigTls {
                                 }
 
                                 Ok(res) => {
+                                    if res.is_empty() {
+                                        errs.push(ConfigTlsError::InvalidCertificate {
+                                            path: self.certificate.clone(),
+                                            err: String::from("the certificate is missing"),
+                                        });
+                                    }
                                     cert = Some(res);
                                 }
                             }
@@ -134,8 +140,7 @@ impl ConfigTls {
 
                             let mut reader = Cursor::new(raw);
 
-                            match rustls_pemfile::certs(&mut reader).collect::<Result<Vec<_>, _>>()
-                            {
+                            match rustls_pemfile::private_key(&mut reader) {
                                 Err(err) => {
                                     errs.push(ConfigTlsError::InvalidKey {
                                         path: self.certificate.clone(),
@@ -144,7 +149,13 @@ impl ConfigTls {
                                 }
 
                                 Ok(res) => {
-                                    cert = Some(res);
+                                    if res.is_none() {
+                                        errs.push(ConfigTlsError::InvalidKey {
+                                            path: self.certificate.clone(),
+                                            err: String::from("the key is missing"),
+                                        });
+                                    }
+                                    key = res;
                                 }
                             }
                         }
@@ -222,7 +233,7 @@ impl ConfigTls {
 
 #[derive(Debug, Clone, Error)]
 pub(crate) enum ConfigTlsError {
-    #[error("invalid tls certificate at '{path}': {err}")]
+    #[error("invalid tls certificate in '{path}': {err}")]
     InvalidCertificate { path: String, err: String },
 
     #[error("invalid tls certificate file '{path}': {err}")]
@@ -231,7 +242,7 @@ pub(crate) enum ConfigTlsError {
     #[error("path to tls certificate is missing")]
     MissingCertificate,
 
-    #[error("invalid tls key at '{path}': {err}")]
+    #[error("invalid tls key in '{path}': {err}")]
     InvalidKey { path: String, err: String },
 
     #[error("invalid tls key file '{path}': {err}")]

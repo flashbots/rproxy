@@ -440,7 +440,7 @@ tls:
 # TYPE rproxy_ws_latency_backend_nanoseconds gauge
 # UNIT rproxy_ws_latency_backend_nanoseconds nanoseconds
 
-# HELP rproxy_ws_latency_client_nanoseconds round-trip-time of websocket pings to backend divided by 2.
+# HELP rproxy_ws_latency_client_nanoseconds round-trip-time of websocket pings to client divided by 2.
 # TYPE rproxy_ws_latency_client_nanoseconds gauge
 # UNIT rproxy_ws_latency_client_nanoseconds nanoseconds
 
