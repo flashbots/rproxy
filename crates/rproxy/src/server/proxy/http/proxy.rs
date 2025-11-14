@@ -455,6 +455,7 @@ where
                     request_id = %req_id,
                     connection_id = %conn_id,
                     worker_id = %this.id,
+                    http_request = if this.shared.config().log_proxied_responses() { str::from_utf8(&decompressed_body).unwrap_or_default() } else { "" },
                     error = ?err,
                     "Failed to parse json-rpc request",
                 );
@@ -619,6 +620,7 @@ where
                     request_id = %clnt_req.info.req_id,
                     connection_id = %clnt_req.info.conn_id,
                     worker_id = %worker_id,
+                    http_request = if inner.config().log_proxied_responses() { str::from_utf8(&clnt_req.decompressed_body).unwrap_or_default() } else { "" },
                     error = ?err,
                     "Failed to parse json-rpc request",
                 );

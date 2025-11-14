@@ -12,13 +12,15 @@ const JRPC_METHOD_FCUV2_WITH_PAYLOAD: Cow<'static, str> =
 const JRPC_METHOD_FCUV3_WITH_PAYLOAD: Cow<'static, str> =
     Cow::Borrowed("engine_forkchoiceUpdatedV3_withPayload");
 
+const EMPTY_PARAMS: &Vec<serde_json::Value> = &Vec::new();
+
 pub(crate) struct JrpcRequestMeta {
     id: Id,
 
     method: Cow<'static, str>,
     method_enriched: Cow<'static, str>,
 
-    params: Vec<serde_json::Value>,
+    params: serde_json::Value,
 }
 
 impl JrpcRequestMeta {
@@ -39,7 +41,7 @@ impl JrpcRequestMeta {
 
     #[inline]
     pub(crate) fn params(&self) -> &Vec<serde_json::Value> {
-        &self.params
+        self.params.as_array().unwrap_or(EMPTY_PARAMS)
     }
 }
 
@@ -52,15 +54,17 @@ impl<'a> Deserialize<'a> for JrpcRequestMeta {
         struct JrpcRequestMetaWire {
             id: Id,
             method: Cow<'static, str>,
-            params: Vec<serde_json::Value>,
+            params: serde_json::Value,
         }
 
         let wire = JrpcRequestMetaWire::deserialize(deserializer)?;
 
         let mut params_count = 0;
-        for param in wire.params.iter() {
-            if !param.is_null() {
-                params_count += 1;
+        if let Some(params) = wire.params.as_array() {
+            for param in params.iter() {
+                if !param.is_null() {
+                    params_count += 1;
+                }
             }
         }
 
