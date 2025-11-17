@@ -254,7 +254,7 @@ where
             Err(err) => {
                 error!(
                     proxy = P::name(),
-                    request_id = %info.id(),
+                    request_id = %info.req_id(),
                     connection_id = %info.conn_id(),
                     worker_id = %this.id,
                     error = ?err,
@@ -278,7 +278,7 @@ where
         let bknd_uri = this.backend.new_backend_uri(&info);
         trace!(
             proxy = P::name(),
-            request_id = %info.id(),
+            request_id = %info.req_id(),
             connection_id = %info.conn_id(),
             worker_id = %this.id,
             backend_uri = %bknd_uri,
@@ -296,7 +296,7 @@ where
             Ok(Err(err)) => {
                 error!(
                     proxy = P::name(),
-                    request_id = %info.id(),
+                    request_id = %info.req_id(),
                     connection_id = %info.conn_id(),
                     worker_id = %this.id,
                     error = ?err,
@@ -312,7 +312,7 @@ where
                 {
                     error!(
                         proxy = P::name(),
-                        request_id = %info.id(),
+                        request_id = %info.req_id(),
                         connection_id = %info.conn_id(),
                         worker_id = %this.id,
                         error = ?err,
@@ -325,7 +325,7 @@ where
             Err(_) => {
                 error!(
                     proxy = P::name(),
-                    request_id = %info.id(),
+                    request_id = %info.req_id(),
                     connection_id = %info.conn_id(),
                     worker_id = %this.id,
                     "Timed out to establish backend websocket session"
@@ -340,7 +340,7 @@ where
                 {
                     error!(
                         proxy = P::name(),
-                        request_id = %info.id(),
+                        request_id = %info.req_id(),
                         connection_id = %info.conn_id(),
                         worker_id = %this.id,
                         error = ?err,
@@ -1162,7 +1162,7 @@ where
             .inspect_err(|err| {
                 error!(
                     proxy = P::name(),
-                    request_id = %info.id(),
+                    request_id = %info.req_id(),
                     connection_id = %info.conn_id(),
                     worker_id = %self.worker_id,
                     error = ?err,
@@ -1176,7 +1176,7 @@ where
             .inspect_err(|err| {
                 error!(
                     proxy = P::name(),
-                    request_id = %info.id(),
+                    request_id = %info.req_id(),
                     connection_id = %info.conn_id(),
                     worker_id = %self.worker_id,
                     error = ?err, "Failed to construct backend URI, defaulting to the base one",

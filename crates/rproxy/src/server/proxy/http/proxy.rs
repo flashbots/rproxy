@@ -19,8 +19,8 @@ use actix_web::{
     HttpRequest,
     HttpResponse,
     HttpResponseBuilder,
-    HttpServer,
     body::BodySize,
+    dev::AppConfig,
     http::{StatusCode, header},
     middleware::{NormalizePath, TrailingSlash},
     web,
@@ -77,7 +77,7 @@ where
     shared: ProxyHttpSharedState<C, P>,
 
     backend: ProxyHttpBackendEndpoint<C, P>,
-    requests: HashMap<Uuid, ProxiedHttpRequest>,
+    requests: Arc<HashMap<Uuid, ProxiedHttpRequest>>,
     postprocessor: actix::Addr<ProxyHttpPostprocessor<C, P>>,
 }
 
@@ -130,7 +130,7 @@ where
         }
         .start();
 
-        Self { id, shared, backend, requests: HashMap::default(), postprocessor }
+        Self { id, shared, backend, requests: Arc::new(HashMap::default()), postprocessor }
     }
 
     pub(crate) async fn run(
@@ -155,6 +155,8 @@ where
             }
         };
 
+        let keep_alive =
+            config.idle_connection_timeout().div_f64(f64::from(TCP_KEEPALIVE_ATTEMPTS));
         let workers_count =
             std::cmp::min(PARALLELISM.to_static(), config.backend_max_concurrent_requests());
         let max_concurrent_requests_per_worker =
@@ -181,44 +183,82 @@ where
             "Starting http-proxy..."
         );
 
-        let proxy = HttpServer::new(move || {
-            let this =
-                web::Data::new(Self::new(shared.clone(), max_concurrent_requests_per_worker));
+        let server = actix_server::Server::build()
+            .shutdown_signal(canceller.cancelled_owned())
+            .workers(workers_count);
 
-            App::new()
-                .app_data(this)
-                .wrap(NormalizePath::new(TrailingSlash::Trim))
-                .default_service(web::route().to(Self::receive))
-        })
-        .on_connect(ConnectionGuard::on_connect(P::name(), metrics, client_connections_count))
-        .shutdown_signal(canceller.cancelled_owned())
-        .workers(workers_count);
+        let server = if tls.enabled() {
+            server.listen(P::name(), listener, move || {
+                let this =
+                    web::Data::new(Self::new(shared.clone(), max_concurrent_requests_per_worker));
 
-        let server = match if tls.enabled() {
-            let cert = tls.certificate().clone();
-            let key = tls.key().clone_key();
+                let app = App::new()
+                    .app_data(this)
+                    .wrap(NormalizePath::new(TrailingSlash::Trim))
+                    .default_service(web::route().to(Self::receive));
 
-            proxy.listen_rustls_0_23(
-                listener,
-                rustls::ServerConfig::builder()
+                let on_connect = ConnectionGuard::on_connect(
+                    P::name(),
+                    metrics.clone(),
+                    client_connections_count.clone(),
+                );
+
+                let h1 = actix_http::HttpService::build()
+                    .keep_alive(keep_alive)
+                    .on_connect_ext(move |io: &_, ext: _| {
+                        (on_connect)(io as &dyn std::any::Any, ext)
+                    })
+                    .h1(actix_service::map_config(app, |_| AppConfig::default()));
+
+                let cert = tls.certificate().clone();
+                let key = tls.key().clone_key();
+                let tls_config = rustls::ServerConfig::builder()
                     .with_no_client_auth()
                     .with_single_cert(cert, key)
-                    .unwrap(), // safety: verified on start
-            )
+                    .unwrap(); // safety: verified on start
+                h1.rustls_0_23(tls_config)
+            })
         } else {
-            proxy.listen(listener)
-        } {
+            server.listen(P::name(), listener, move || {
+                let this =
+                    web::Data::new(Self::new(shared.clone(), max_concurrent_requests_per_worker));
+
+                let app = App::new()
+                    .app_data(this)
+                    .wrap(NormalizePath::new(TrailingSlash::Trim))
+                    .default_service(web::route().to(Self::receive));
+
+                let on_connect = ConnectionGuard::on_connect(
+                    P::name(),
+                    metrics.clone(),
+                    client_connections_count.clone(),
+                );
+
+                let h1 = actix_http::HttpService::build()
+                    .keep_alive(keep_alive)
+                    .on_connect_ext(move |io: &_, ext: _| {
+                        (on_connect)(io as &dyn std::any::Any, ext)
+                    })
+                    .h1(actix_service::map_config(app, |_| AppConfig::default()));
+
+                h1.tcp()
+            })
+        };
+
+        let server = match server {
             Ok(server) => server,
+
             Err(err) => {
                 error!(
                     proxy = P::name(),
                     error = ?err,
-                    "Failed to initialise http-proxy",
+                    "Failed to initialise a service"
                 );
                 return Err(Box::new(err));
             }
-        }
-        .run();
+        };
+
+        let server = server.run();
 
         let handler = server.handle();
         let mut resetter = resetter.subscribe();
@@ -298,12 +338,24 @@ where
     ) -> Result<HttpResponse, actix_web::Error> {
         let timestamp = UtcDateTime::now();
 
+        let info = ProxyHttpRequestInfo::new(&clnt_req, clnt_req.conn_data::<ConnectionGuard>());
+
+        debug!(
+            proxy = P::name(),
+            request_id = %info.req_id,
+            connection_id = %info.conn_id,
+            worker_id = %this.id,
+            latency_total = (UtcDateTime::now() - timestamp).as_seconds_f64(),
+            "Receiving http request...",
+        );
+
+        let metrics = this.shared.metrics.clone();
+
         if let Some(user_agent) = clnt_req.headers().get(header::USER_AGENT) &&
             !user_agent.is_empty() &&
             let Ok(user_agent) = user_agent.to_str()
         {
-            this.shared
-                .metrics
+            metrics
                 .client_info
                 .get_or_create(&LabelsProxyClientInfo {
                     proxy: P::name(),
@@ -312,13 +364,23 @@ where
                 .inc();
         }
 
-        let info = ProxyHttpRequestInfo::new(&clnt_req, clnt_req.conn_data::<ConnectionGuard>());
+        metrics
+            .http_in_flight_requests_client
+            .get_or_create(&LabelsProxy { proxy: P::name() })
+            .inc();
 
-        if this.shared.inner.might_intercept() {
+        let res = if this.shared.inner.might_intercept() {
             Self::send_to_backend_and_maybe_intercept(this, info, clnt_req_body, timestamp).await
         } else {
             Self::stream_to_backend(this, info, clnt_req_body, timestamp).await
-        }
+        };
+
+        metrics
+            .http_in_flight_requests_client
+            .get_or_create(&LabelsProxy { proxy: P::name() })
+            .dec();
+
+        res
     }
 
     async fn stream_to_backend(
@@ -339,6 +401,22 @@ where
             timestamp,
         );
 
+        this.shared
+            .metrics
+            .http_in_flight_requests_backend
+            .get_or_create(&LabelsProxy { proxy: P::name() })
+            .inc();
+
+        debug!(
+            proxy = P::name(),
+            request_id = %req_id,
+            connection_id = %conn_id,
+            worker_id = %this.id,
+            backend_url = %this.backend.url,
+            latency_total = (UtcDateTime::now() - timestamp).as_seconds_f64(),
+            "Streaming http request to backend...",
+        );
+
         let bknd_res = match bknd_req.send_stream(bknd_req_body).await {
             Ok(bknd_res) => bknd_res,
 
@@ -349,6 +427,7 @@ where
                     connection_id = %conn_id,
                     worker_id = %this.id,
                     backend_url = %this.backend.url,
+                    latency_total = (UtcDateTime::now() - timestamp).as_seconds_f64(),
                     error = ?err,
                     "Failed to proxy a request",
                 );
@@ -357,9 +436,30 @@ where
                     .http_proxy_failure_count
                     .get_or_create(&LabelsProxy { proxy: P::name() })
                     .inc();
+                this.shared
+                    .metrics
+                    .http_in_flight_requests_backend
+                    .get_or_create(&LabelsProxy { proxy: P::name() })
+                    .dec();
                 return Ok(HttpResponse::BadGateway().body(format!("Backend error: {err:?}")));
             }
         };
+
+        debug!(
+            proxy = P::name(),
+            request_id = %req_id,
+            connection_id = %conn_id,
+            worker_id = %this.id,
+            backend_url = %this.backend.url,
+            latency_total = (UtcDateTime::now() - timestamp).as_seconds_f64(),
+            "Finished streaming http request to backend",
+        );
+
+        this.shared
+            .metrics
+            .http_in_flight_requests_backend
+            .get_or_create(&LabelsProxy { proxy: P::name() })
+            .dec();
 
         Self::stream_to_client(this, req_id, conn_id, bknd_res)
     }
@@ -373,6 +473,15 @@ where
         let req_id = info.req_id;
         let conn_id = info.conn_id;
 
+        debug!(
+            proxy = P::name(),
+            request_id = %info.req_id,
+            connection_id = %info.conn_id,
+            worker_id = %this.id,
+            latency_total = (UtcDateTime::now() - timestamp).as_seconds_f64(),
+            "Sending http request to backend...",
+        );
+
         let body =
             match clnt_req_body.to_bytes_limited(this.shared.config().max_request_size()).await {
                 Ok(Ok(body)) => body,
@@ -384,6 +493,7 @@ where
                         connection_id = %conn_id,
                         worker_id = %this.id,
                         backend_url = %this.backend.url,
+                        latency_total = (UtcDateTime::now() - timestamp).as_seconds_f64(),
                         error = ?err,
                         "Failed to proxy a request",
                     );
@@ -406,6 +516,7 @@ where
                         connection_id = %conn_id,
                         worker_id = %this.id,
                         backend_url = %this.backend.url,
+                        latency_total = (UtcDateTime::now() - timestamp).as_seconds_f64(),
                         error = ?err,
                         "Failed to proxy a request",
                     );
@@ -418,6 +529,15 @@ where
                 }
             };
         let size = body.len();
+
+        debug!(
+            proxy = P::name(),
+            request_id = %info.req_id,
+            connection_id = %info.conn_id,
+            worker_id = %this.id,
+            latency_total = (UtcDateTime::now() - timestamp).as_seconds_f64(),
+            "Got http response from backend",
+        );
 
         let (decompressed_body, decompressed_size) =
             decompress(body.clone(), size, info.content_encoding());
@@ -438,6 +558,7 @@ where
                         request_id = %req_id,
                         connection_id = %conn_id,
                         worker_id = %this.id,
+                        latency_total = (UtcDateTime::now() - timestamp).as_seconds_f64(),
                         jrpc_method = %jrpc.method_enriched(),
                         remote_addr = info.remote_addr,
                         ts_request_received = timestamp.format(&Iso8601::DEFAULT).unwrap_or_default(),
@@ -456,6 +577,7 @@ where
                     connection_id = %conn_id,
                     worker_id = %this.id,
                     http_request = if this.shared.config().log_proxied_responses() { str::from_utf8(&decompressed_body).unwrap_or_default() } else { "" },
+                    latency_total = (UtcDateTime::now() - timestamp).as_seconds_f64(),
                     error = ?err,
                     "Failed to parse json-rpc request",
                 );
@@ -473,6 +595,13 @@ where
         };
 
         let bknd_req = this.backend.new_backend_request(&req.info);
+
+        this.shared
+            .metrics
+            .http_in_flight_requests_backend
+            .get_or_create(&LabelsProxy { proxy: P::name() })
+            .inc();
+
         let bknd_res = match bknd_req.send_body(req.body.clone()).await {
             Ok(bknd_res) => bknd_res,
 
@@ -483,6 +612,7 @@ where
                     connection_id = %conn_id,
                     worker_id = %this.id,
                     backend_url = %this.backend.url,
+                    latency_total = (UtcDateTime::now() - timestamp).as_seconds_f64(),
                     error = ?err,
                     "Failed to proxy a request",
                 );
@@ -491,10 +621,20 @@ where
                     .http_proxy_failure_count
                     .get_or_create(&LabelsProxy { proxy: P::name() })
                     .inc();
-
+                this.shared
+                    .metrics
+                    .http_in_flight_requests_backend
+                    .get_or_create(&LabelsProxy { proxy: P::name() })
+                    .dec();
                 return Ok(HttpResponse::BadGateway().body(format!("Backend error: {err:?}")));
             }
         };
+
+        this.shared
+            .metrics
+            .http_in_flight_requests_backend
+            .get_or_create(&LabelsProxy { proxy: P::name() })
+            .dec();
 
         this.postprocess_client_request(req);
 
@@ -527,39 +667,62 @@ where
             timestamp,
         );
 
+        debug!(
+            proxy = P::name(),
+            request_id = %req_id,
+            connection_id = %conn_id,
+            worker_id = %bknd_res_body.proxy.id,
+            latency_total = (UtcDateTime::now() - timestamp).as_seconds_f64(),
+            "Sending http response to client...",
+        );
+
         Ok(clnt_res.streaming(bknd_res_body))
     }
 
     fn postprocess_client_request(&self, req: ProxiedHttpRequest) {
-        let id = req.info.req_id;
+        let req_id = req.info.req_id;
         let conn_id = req.info.conn_id;
+        let worker_id = self.id;
 
-        if self.requests.insert_sync(id, req).is_err() {
-            error!(
-                proxy = P::name(),
-                request_id = %id,
-                connection_id = %conn_id,
-                worker_id = %self.id,
-                "Duplicate request id",
-            );
-        };
+        let requests = self.requests.clone();
+
+        actix_web::rt::task::spawn_blocking(move || {
+            if requests.insert_sync(req_id, req).is_err() {
+                error!(
+                    proxy = P::name(),
+                    request_id = %req_id,
+                    connection_id = %conn_id,
+                    worker_id = %worker_id,
+                    "Duplicate request id",
+                );
+            };
+        });
     }
 
     fn postprocess_backend_response(&self, bknd_res: ProxiedHttpResponse) {
-        let Some((_, clnt_req)) = self.requests.remove_sync(&bknd_res.info.req_id) else {
-            error!(
-                proxy = P::name(),
-                request_id = %bknd_res.info.req_id,
-                connection_id = %bknd_res.info.conn_id,
-                worker_id = %self.id,
-                "Proxied http response for unmatching request",
-            );
-            return;
-        };
+        let req_id = bknd_res.info.req_id;
+        let conn_id = bknd_res.info.conn_id;
+        let worker_id = self.id;
 
-        // hand over to postprocessor asynchronously so that we can return the
-        // response to the client as early as possible
-        self.postprocessor.do_send(ProxiedHttpCombo { req: clnt_req, res: bknd_res });
+        let requests = self.requests.clone();
+        let postprocessor = self.postprocessor.clone();
+
+        actix_web::rt::task::spawn_blocking(move || {
+            let Some((_, clnt_req)) = requests.remove_sync(&req_id) else {
+                error!(
+                    proxy = P::name(),
+                    request_id = %req_id,
+                    connection_id = %conn_id,
+                    worker_id = %worker_id,
+                    "Proxied http response for unmatching request",
+                );
+                return;
+            };
+
+            // hand over to postprocessor asynchronously so that we can return the
+            // response to the client as early as possible
+            postprocessor.do_send(ProxiedHttpCombo { req: clnt_req, res: bknd_res });
+        });
     }
 
     fn finalise_proxying(
@@ -1327,7 +1490,7 @@ impl ProxyHttpRequestInfo {
     }
 
     #[inline]
-    pub(crate) fn id(&self) -> Uuid {
+    pub(crate) fn req_id(&self) -> Uuid {
         self.req_id
     }
 
@@ -1369,16 +1532,6 @@ pub(crate) struct ProxyHttpResponseInfo {
 impl ProxyHttpResponseInfo {
     pub(crate) fn new(req_id: Uuid, conn_id: Uuid, status: StatusCode, headers: HeaderMap) -> Self {
         Self { req_id, conn_id, status, headers }
-    }
-
-    #[inline]
-    pub(crate) fn req_id(&self) -> Uuid {
-        self.req_id
-    }
-
-    #[inline]
-    pub(crate) fn conn_id(&self) -> Uuid {
-        self.conn_id
     }
 
     fn content_encoding(&self) -> String {
@@ -1450,64 +1603,20 @@ where
 
             Poll::Ready(Some(Ok(chunk))) => {
                 if this.body.len() + chunk.len() > *this.max_size {
-                    let err = format!(
-                        "request is too large: {}+ > {}",
-                        this.body.len() + chunk.len(),
-                        *this.max_size
-                    );
-                    if let Some(info) = mem::take(this.info) {
-                        warn!(
-                            proxy = P::name(),
-                            request_id = %info.id(),
-                            connection_id = %info.conn_id(),
-                            error = err,
-                            "Proxy http request stream error",
-                        );
-                    } else {
-                        warn!(
-                            proxy = P::name(),
-                            error = err,
-                            request_id = "unknown",
-                            connection_id = "unknown",
-                            "Proxy http request stream error",
-                        );
-                    }
                     return Poll::Ready(Some(Err(E::from(PayloadError::Overflow))))
                 }
                 this.body.extend_from_slice(&chunk);
                 Poll::Ready(Some(Ok(chunk)))
             }
 
-            Poll::Ready(Some(Err(err))) => {
-                if let Some(info) = mem::take(this.info) {
-                    warn!(
-                        proxy = P::name(),
-                        request_id = %info.id(),
-                        connection_id = %info.conn_id(),
-                        error = ?err,
-                        "Proxy http request stream error",
-                    );
-                } else {
-                    warn!(
-                        proxy = P::name(),
-                        error = ?err,
-                        request_id = "unknown",
-                        connection_id = "unknown",
-                        "Proxy http request stream error",
-                    );
-                }
-                Poll::Ready(Some(Err(err)))
-            }
+            Poll::Ready(Some(Err(err))) => Poll::Ready(Some(Err(err))),
 
             Poll::Ready(None) => {
                 let end = UtcDateTime::now();
 
                 if let Some(info) = mem::take(this.info) {
-                    let proxy = this.proxy.clone();
-
                     let req = ProxiedHttpRequest::new(info, mem::take(this.body), *this.start, end);
-
-                    proxy.postprocess_client_request(req);
+                    this.proxy.postprocess_client_request(req);
                 }
 
                 Poll::Ready(None)
@@ -1580,65 +1689,21 @@ where
 
             Poll::Ready(Some(Ok(chunk))) => {
                 if this.body.len() + chunk.len() > *this.max_size {
-                    let err = format!(
-                        "response is too large: {}+ > {}",
-                        this.body.len() + chunk.len(),
-                        *this.max_size
-                    );
-                    if let Some(info) = mem::take(this.info) {
-                        warn!(
-                            proxy = P::name(),
-                            request_id = %info.req_id(),
-                            connection_id = %info.conn_id(),
-                            error = err,
-                            "Proxy http response stream error",
-                        );
-                    } else {
-                        warn!(
-                            proxy = P::name(),
-                            error = err,
-                            request_id = "unknown",
-                            connection_id = "unknown",
-                            "Proxy http response stream error",
-                        );
-                    }
                     return Poll::Ready(Some(Err(E::from(PayloadError::Overflow))))
                 }
                 this.body.extend_from_slice(&chunk);
                 Poll::Ready(Some(Ok(chunk)))
             }
 
-            Poll::Ready(Some(Err(err))) => {
-                if let Some(info) = mem::take(this.info) {
-                    warn!(
-                        proxy = P::name(),
-                        request_id = %info.req_id(),
-                        connection_id = %info.conn_id(),
-                        error = ?err,
-                        "Proxy http response stream error",
-                    );
-                } else {
-                    warn!(
-                        proxy = P::name(),
-                        error = ?err,
-                        request_id = "unknown",
-                        connection_id = "unknown",
-                        "Proxy http response stream error",
-                    );
-                }
-                Poll::Ready(Some(Err(err)))
-            }
+            Poll::Ready(Some(Err(err))) => Poll::Ready(Some(Err(err))),
 
             Poll::Ready(None) => {
                 let end = UtcDateTime::now();
 
                 if let Some(info) = mem::take(this.info) {
-                    let proxy = this.proxy.clone();
-
                     let res =
                         ProxiedHttpResponse::new(info, mem::take(this.body), *this.start, end);
-
-                    proxy.postprocess_backend_response(res);
+                    this.proxy.postprocess_backend_response(res);
                 }
 
                 Poll::Ready(None)
