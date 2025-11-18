@@ -29,7 +29,7 @@ permissions:
 jobs:
   extract_version:
     name: extract version
-    runs-on: warp-ubuntu-latest-x64-16x
+    runs-on: ubuntu-latest
     outputs:
       VERSION: ${{ steps.extract_version.outputs.VERSION }}
     steps:
@@ -113,7 +113,7 @@ jobs:
     name: draft release
     if: ${{ github.event.inputs.draft_release == 'true' || github.event_name == 'push' }}
     needs: [extract_version, build_binary]
-    runs-on: warp-ubuntu-latest-x64-16x
+    runs-on: ubuntu-latest
     env:
       VERSION: ${{ needs.extract_version.outputs.VERSION }}
     permissions:
@@ -239,7 +239,7 @@ jobs:
 
   publish_container_index:
     name: publish container index
-    runs-on: warp-ubuntu-latest-x64-16x
+    runs-on: ubuntu-latest
     env:
       VERSION: ${{ needs.extract_version.outputs.VERSION }}
     needs:
