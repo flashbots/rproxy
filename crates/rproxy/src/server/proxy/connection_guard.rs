@@ -63,7 +63,10 @@ impl ConnectionGuard {
             } else if let Some(stream) = connection.downcast_ref::<actix_web::rt::net::TcpStream>() {
                 Some(stream)
             } else {
-                warn!("Unexpected stream type");
+                warn!(
+                    connection_type = std::any::type_name_of_val(connection),
+                    "Unexpected connection type",
+                );
                 None
             };
 
@@ -73,18 +76,27 @@ impl ConnectionGuard {
                 let remote_addr = match stream.peer_addr() {
                     Ok(local_addr) => Some(local_addr.to_string()),
                     Err(err) => {
-                        warn!(proxy = proxy, error = ?err, "Failed to get remote address");
+                        warn!(
+                            proxy = proxy,
+                            error = ?err,
+                            "Failed to get remote peer address of incoming connection",
+                        );
                         None
                     }
                 };
                 let local_addr = match stream.local_addr() {
                     Ok(local_addr) => Some(local_addr.to_string()),
                     Err(err) => {
-                        warn!(proxy = proxy, error = ?err, "Failed to get remote address");
+                        warn!(
+                            proxy = proxy,
+                            error = ?err,
+                            "Failed to get local peer address for incoming connection",
+                        );
                         None
                     }
                 };
 
+                #[cfg(debug_assertions)]
                 debug!(
                     proxy = proxy,
                     connection_id = %id,
@@ -115,6 +127,7 @@ impl Drop for ConnectionGuard {
         self.metrics.client_connections_active_count.get_or_create(&metric_labels).set(val);
         self.metrics.client_connections_closed_count.get_or_create(&metric_labels).inc();
 
+        #[cfg(debug_assertions)]
         debug!(
             proxy = self.proxy,
             connection_id = %self.id,

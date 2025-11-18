@@ -1,2 +1,4 @@
 [build]
-rustflags = ["--cfg", "tracing_unstable"]
+rustflags = [
+    "--cfg", "tracing_unstable",
+]

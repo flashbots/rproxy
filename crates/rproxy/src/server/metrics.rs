@@ -34,6 +34,9 @@ pub(crate) struct Metrics {
     pub(crate) client_connections_closed_count: Family<LabelsProxy, Counter>,
     pub(crate) client_info: Family<LabelsProxyClientInfo, Counter>,
 
+    pub(crate) http_in_flight_requests_backend: Family<LabelsProxy, Gauge>,
+    pub(crate) http_in_flight_requests_client: Family<LabelsProxy, Gauge>,
+
     pub(crate) http_latency_backend: Family<LabelsProxyHttpJrpc, Candlestick>,
     pub(crate) http_latency_delta: Family<LabelsProxyHttpJrpc, Candlestick>,
     pub(crate) http_latency_total: Family<LabelsProxyHttpJrpc, Candlestick>,
@@ -74,6 +77,9 @@ impl Metrics {
             client_connections_closed_count: Family::default(),
 
             client_info: Family::default(),
+
+            http_in_flight_requests_backend: Family::default(),
+            http_in_flight_requests_client: Family::default(),
 
             http_latency_backend: Family::default(),
             http_latency_delta: Family::default(),
@@ -126,6 +132,18 @@ impl Metrics {
             "client_connections_closed_count",
             "count of client connections closed",
             this.client_connections_closed_count.clone(),
+        );
+
+        this.registry.register(
+            "http_in_flight_requests_backend",
+            "count of in-flight backend requests",
+            this.http_in_flight_requests_backend.clone(),
+        );
+
+        this.registry.register(
+            "http_in_flight_requests_client",
+            "count of in-flight client requests",
+            this.http_in_flight_requests_client.clone(),
         );
 
         this.registry.register_with_unit(

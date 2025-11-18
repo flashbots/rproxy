@@ -82,7 +82,7 @@ impl ProxyHttpInner<ConfigRpc> for ProxyHttpInnerRpc {
                     Err(err) => {
                         warn!(
                             proxy = Self::name(),
-                            request_id = %http_req.info().id(),
+                            request_id = %http_req.info().req_id(),
                             connection_id = %http_req.info().conn_id(),
                             error = ?err,
                             "Failed to parse json-rpc response",
@@ -94,7 +94,7 @@ impl ProxyHttpInner<ConfigRpc> for ProxyHttpInnerRpc {
                 if jrpc_res_batch.len() != jrpc_req_batch.len() {
                     warn!(
                         proxy = Self::name(),
-                        request_id = %http_req.info().id(),
+                        request_id = %http_req.info().req_id(),
                         connection_id = %http_req.info().conn_id(),
                         "A response to jrpc-batch has mismatching count of objects (want: {}, got: {})",
                         jrpc_req_batch.len(),
