@@ -53,7 +53,6 @@ const WS_PING_INTERVAL_SECONDS: u64 = 1;
 
 const WS_CLNT_ERROR: &str = "client error";
 const WS_BKND_ERROR: &str = "backend error";
-const WS_BKND_TIMEOUT: &str = "backend error";
 const WS_CLOSE_OK: &str = "";
 
 const WS_LABEL_BKND: &str = "backend";
