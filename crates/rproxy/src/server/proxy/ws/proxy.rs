@@ -301,7 +301,7 @@ where
                     error = ?err,
                     "Failed to establish backend websocket session"
                 );
-                let _ = clnt_tx // only 1 possible error (already closed)
+                let _ = clnt_tx // only 1 possible error (i.e. "already closed")
                     .close(Some(actix_ws::CloseReason {
                         code: awc::ws::CloseCode::Error,
                         description: Some(String::from(WS_BKND_ERROR)),
@@ -319,7 +319,7 @@ where
                     worker_id = %this.id,
                     "Timed out to establish backend websocket session"
                 );
-                let _ = clnt_tx // only 1 possible error (already closed)
+                let _ = clnt_tx // only 1 possible error (i.e. "already closed")
                     .close(Some(actix_ws::CloseReason {
                         code: awc::ws::CloseCode::Error,
                         description: Some(String::from(WS_BKND_ERROR)),
@@ -408,7 +408,7 @@ where
                     msg = %msg,
                     "Closing client websocket session..."
             );
-            let _ = clnt_tx // only 1 possible error (already closed)
+            let _ = clnt_tx // only 1 possible error (i.e. "already closed")
                 .close(Some(actix_ws::CloseReason {
                     code: awc::ws::CloseCode::Error,
                     description: Some(String::from(WS_BKND_ERROR)),
@@ -445,7 +445,7 @@ where
                     worker_id = %this.id,
                     "Closing client websocket session..."
             );
-            let _ = clnt_tx // only 1 possible error (already closed)
+            let _ = clnt_tx // only 1 possible error (i.e. "already closed")
                 .close(Some(actix_ws::CloseReason {
                     code: awc::ws::CloseCode::Normal,
                     description: None,
