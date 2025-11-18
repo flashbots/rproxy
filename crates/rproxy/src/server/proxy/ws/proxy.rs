@@ -302,27 +302,17 @@ where
                     error = ?err,
                     "Failed to establish backend websocket session"
                 );
-
-                if let Err(err) = clnt_tx
+                let _ = clnt_tx // only 1 possible error (already closed)
                     .close(Some(actix_ws::CloseReason {
                         code: awc::ws::CloseCode::Error,
                         description: Some(String::from(WS_BKND_ERROR)),
                     }))
-                    .await
-                {
-                    error!(
-                        proxy = P::name(),
-                        request_id = %info.req_id(),
-                        connection_id = %info.conn_id(),
-                        worker_id = %this.id,
-                        error = ?err,
-                        "Failed to close client websocket session"
-                    );
-                };
+                    .await;
                 return;
             }
 
             Err(_) => {
+                // only 1 possible error (timed out)
                 error!(
                     proxy = P::name(),
                     request_id = %info.req_id(),
@@ -330,23 +320,12 @@ where
                     worker_id = %this.id,
                     "Timed out to establish backend websocket session"
                 );
-
-                if let Err(err) = clnt_tx
+                let _ = clnt_tx // only 1 possible error (already closed)
                     .close(Some(actix_ws::CloseReason {
-                        code: awc::ws::CloseCode::Again,
-                        description: Some(String::from(WS_BKND_TIMEOUT)),
+                        code: awc::ws::CloseCode::Error,
+                        description: Some(String::from(WS_BKND_ERROR)),
                     }))
-                    .await
-                {
-                    error!(
-                        proxy = P::name(),
-                        request_id = %info.req_id(),
-                        connection_id = %info.conn_id(),
-                        worker_id = %this.id,
-                        error = ?err,
-                        "Failed to close client websocket session"
-                    );
-                }
+                    .await;
                 return;
             }
         };
@@ -430,22 +409,12 @@ where
                     msg = %msg,
                     "Closing client websocket session..."
             );
-            if let Err(err) = clnt_tx
+            let _ = clnt_tx // only 1 possible error (already closed)
                 .close(Some(actix_ws::CloseReason {
                     code: awc::ws::CloseCode::Error,
-                    description: Some(String::from(msg)),
+                    description: Some(String::from(WS_BKND_ERROR)),
                 }))
-                .await
-            {
-                error!(
-                    proxy = P::name(),
-                    connection_id = %info.conn_id(),
-                    worker_id = %this.id,
-                    msg = %msg,
-                    error = ?err,
-                    "Failed to close client websocket session"
-                );
-            }
+                .await;
 
             debug!(
                     proxy = P::name(),
@@ -477,21 +446,12 @@ where
                     worker_id = %this.id,
                     "Closing client websocket session..."
             );
-            if let Err(err) = clnt_tx
+            let _ = clnt_tx // only 1 possible error (already closed)
                 .close(Some(actix_ws::CloseReason {
                     code: awc::ws::CloseCode::Normal,
                     description: None,
                 }))
-                .await
-            {
-                error!(
-                    proxy = P::name(),
-                    connection_id = %info.conn_id(),
-                    worker_id = %this.id,
-                    error = ?err,
-                    "Failed to close client websocket session"
-                );
-            }
+                .await;
 
             debug!(
                     proxy = P::name(),
@@ -732,7 +692,7 @@ where
                                 connection_id = %info.conn_id(),
                                 worker_id = %this.id,
                                 error = ?err,
-                                "Failed to proxy close websocket message to backend"
+                                "Failed to close backend websocket session"
                             );
                             return Err(WS_BKND_ERROR);
                         }
