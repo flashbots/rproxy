@@ -76,7 +76,7 @@ impl ConfigTls {
                             });
                         } else {
                             if let Ok(decoded) =
-                                base64::engine::general_purpose::STANDARD.decode(&raw)
+                                base64::engine::general_purpose::STANDARD.decode(raw.trim_ascii())
                             {
                                 raw = decoded;
                             }
@@ -133,7 +133,7 @@ impl ConfigTls {
                             });
                         } else {
                             if let Ok(decoded) =
-                                base64::engine::general_purpose::STANDARD.decode(&raw)
+                                base64::engine::general_purpose::STANDARD.decode(raw.trim_ascii())
                             {
                                 raw = decoded;
                             }
@@ -194,7 +194,8 @@ impl ConfigTls {
             let mut raw = Vec::new();
             file.read_to_end(&mut raw).expect(ALREADY_VALIDATED);
 
-            if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(&raw) {
+            if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(raw.trim_ascii())
+            {
                 raw = decoded;
             }
 
@@ -213,7 +214,8 @@ impl ConfigTls {
             let mut raw = Vec::new();
             file.read_to_end(&mut raw).expect(ALREADY_VALIDATED);
 
-            if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(&raw) {
+            if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(raw.trim_ascii())
+            {
                 raw = decoded;
             }
 
