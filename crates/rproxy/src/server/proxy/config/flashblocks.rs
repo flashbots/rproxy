@@ -78,9 +78,48 @@ pub(crate) struct ConfigFlashblocks {
         help_heading = "flashblocks",
         env = "RPROXY_FLASHBLOCKS_LOG_SANITISE",
         long("flashblocks-log-sanitise"),
-        name("flashblocks-log_sanitise")
+        name("flashblocks_log_sanitise")
     )]
     pub(crate) log_sanitise: bool,
+
+    /// the chance (between 0.0 and 1.0) that pings received from
+    /// flashblocks backend would be ignored (no pong sent)
+    #[arg(
+        default_value = "0.0",
+        help_heading = "chaos",
+        env = "RPROXY_CHAOS_PROBABILITY_FLASHBLOCKS_BACKEND_PING_IGNORED",
+        long("chaos-probability-flashblocks-backend-ping-ignored"),
+        name("chaos_probability_flashblocks_backend_ping_ignored"),
+        value_name = "probability"
+    )]
+    #[cfg(feature = "chaos")]
+    pub(crate) chaos_probability_backend_ping_ignored: f64,
+
+    /// the chance (between 0.0 and 1.0) that pings received from
+    /// flashblocks client would be ignored (no pong sent)
+    #[arg(
+        default_value = "0.0",
+        help_heading = "chaos",
+        env = "RPROXY_CHAOS_PROBABILITY_FLASHBLOCKS_CLIENT_PING_IGNORED",
+        long("chaos-probability-flashblocks-client-ping-ignored"),
+        name("chaos_probability_flashblocks_client_ping_ignored"),
+        value_name = "probability"
+    )]
+    #[cfg(feature = "chaos")]
+    pub(crate) chaos_probability_client_ping_ignored: f64,
+
+    /// the chance (between 0.0 and 1.0) that client's flashblocks stream
+    /// would block (no more messages sent)
+    #[arg(
+        default_value = "0.0",
+        help_heading = "chaos",
+        env = "RPROXY_CHAOS_PROBABILITY_FLASHBLOCKS_STREAM_BLOCKED",
+        long("chaos-probability-flashblocks-stream-blocked"),
+        name("chaos_probability_flashblocks_stream_blocked"),
+        value_name = "probability"
+    )]
+    #[cfg(feature = "chaos")]
+    pub(crate) chaos_probability_stream_blocked: f64,
 }
 
 impl ConfigFlashblocks {
@@ -119,6 +158,42 @@ impl ConfigFlashblocks {
             })
         });
 
+        #[cfg(feature = "chaos")]
+        {
+            // chaos_probability_flashblocks_backend_ping_ignored
+            if self.chaos_probability_backend_ping_ignored < 0.0 ||
+                self.chaos_probability_backend_ping_ignored > 1.0
+            {
+                errs.push(
+                    ConfigFlashblocksError::ChaosProbabilityFlashblocksBackendPingIgnoredInvalid {
+                        probability: self.chaos_probability_backend_ping_ignored,
+                    },
+                );
+            }
+
+            // chaos_probability_flashblocks_client_ping_ignored
+            if self.chaos_probability_client_ping_ignored < 0.0 ||
+                self.chaos_probability_client_ping_ignored > 1.0
+            {
+                errs.push(
+                    ConfigFlashblocksError::ChaosProbabilityFlashblocksClientPingIgnoredInvalid {
+                        probability: self.chaos_probability_client_ping_ignored,
+                    },
+                );
+            }
+
+            // chaos_probability_flashblocks_stream_blocked
+            if self.chaos_probability_stream_blocked < 0.0 ||
+                self.chaos_probability_stream_blocked > 1.0
+            {
+                errs.push(
+                    ConfigFlashblocksError::ChaosProbabilityFlashblocksStreamBlockedInvalid {
+                        probability: self.chaos_probability_stream_blocked,
+                    },
+                );
+            }
+        }
+
         match errs.len() {
             0 => None,
             _ => Some(errs),
@@ -156,6 +231,24 @@ impl ConfigProxyWs for ConfigFlashblocks {
     fn log_sanitise(&self) -> bool {
         self.log_sanitise
     }
+
+    #[inline]
+    #[cfg(feature = "chaos")]
+    fn chaos_probability_backend_ping_ignored(&self) -> f64 {
+        self.chaos_probability_backend_ping_ignored
+    }
+
+    #[inline]
+    #[cfg(feature = "chaos")]
+    fn chaos_probability_client_ping_ignored(&self) -> f64 {
+        self.chaos_probability_client_ping_ignored
+    }
+
+    #[inline]
+    #[cfg(feature = "chaos")]
+    fn chaos_probability_stream_blocked(&self) -> f64 {
+        self.chaos_probability_stream_blocked
+    }
 }
 
 // ConfigFlashblocksError ----------------------------------------------
@@ -170,4 +263,22 @@ pub(crate) enum ConfigFlashblocksError {
 
     #[error("invalid flashblocks proxy listen address '{addr}': {err}")]
     ListenAddressInvalid { addr: String, err: std::net::AddrParseError },
+
+    #[error(
+        "invalid flashblocks backend ping ignore probability (must be within [0.0 .. 1.0]: {probability}"
+    )]
+    #[cfg(feature = "chaos")]
+    ChaosProbabilityFlashblocksBackendPingIgnoredInvalid { probability: f64 },
+
+    #[error(
+        "invalid flashblocks client ping ignore probability (must be within [0.0 .. 1.0]: {probability}"
+    )]
+    #[cfg(feature = "chaos")]
+    ChaosProbabilityFlashblocksClientPingIgnoredInvalid { probability: f64 },
+
+    #[error(
+        "invalid flashblocks stream block probability (must be within [0.0 .. 1.0]: {probability}"
+    )]
+    #[cfg(feature = "chaos")]
+    ChaosProbabilityFlashblocksStreamBlockedInvalid { probability: f64 },
 }
