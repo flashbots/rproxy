@@ -11,6 +11,11 @@ path = "src/bin/main.rs"
 [lints]
 workspace = true
 
+[features]
+default = []
+
+chaos = ["rand"]
+
 [dependencies]
 actix = "0.13.5"
 actix-http = { version = "3.11.1", features = ["ws"] }
@@ -41,6 +46,7 @@ parking_lot = "0.12.4"
 pin-project = "1.1.10"
 pnet = "0.35.0"
 prometheus-client = { git = "https://github.com/0x416e746f6e/client_rust.git", branch = "nested-labels"}
+rand = { version = "0.9.2", optional = true }
 rustc-hash = "2.1.1"
 rustls = "0.23.32"
 rustls-pemfile = "2.2.0"

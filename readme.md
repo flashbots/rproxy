@@ -375,6 +375,34 @@ tls:
           [default: ]
 ```
 
+### Chaos
+
+These flags are enabled when `rproxy` is built with `chaos` feature enabled:
+
+```text
+chaos:
+      --chaos-probability-flashblocks-backend-ping-ignored <probability>
+          the chance (between 0.0 and 1.0) that pings received from flashblocks backend
+          would be ignored (no pong sent)
+
+          [env: RPROXY_CHAOS_PROBABILITY_FLASHBLOCKS_BACKEND_PING_IGNORED=]
+          [default: 0.0]
+
+      --chaos-probability-flashblocks-client-ping-ignored <probability>
+          the chance (between 0.0 and 1.0) that pings received from flashblocks client
+          would be ignored (no pong sent)
+
+          [env: RPROXY_CHAOS_PROBABILITY_FLASHBLOCKS_CLIENT_PING_IGNORED=]
+          [default: 0.0]
+
+      --chaos-probability-flashblocks-stream-blocked <probability>
+          the chance (between 0.0 and 1.0) that client's flashblocks stream would block
+          (no more messages sent)
+
+          [env: RPROXY_CHAOS_PROBABILITY_FLASHBLOCKS_STREAM_BLOCKED=]
+          [default: 0.0]
+```
+
 ## Metrics
 
 ```prometheus
