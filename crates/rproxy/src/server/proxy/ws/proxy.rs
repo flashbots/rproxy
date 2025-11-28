@@ -31,7 +31,6 @@ use time::{UtcDateTime, format_description::well_known::Iso8601};
 use tokio::{net::TcpStream, sync::broadcast};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use tracing::{debug, error, info, trace, warn};
-use tungstenite::Utf8Bytes;
 use uuid::Uuid;
 use x509_parser::asn1_rs::ToStatic;
 
@@ -54,6 +53,9 @@ const WS_PING_INTERVAL_SECONDS: u64 = 1;
 const WS_CLNT_ERROR: &str = "client error";
 const WS_BKND_ERROR: &str = "backend error";
 const WS_CLOSE_OK: &str = "";
+
+const WS_CLOSE_REASON_NORMAL: &str = "normal-close";
+const WS_CLOSE_REASON_UNSPECIFIED: &str = "unexpected-close";
 
 const WS_LABEL_BKND: &str = "backend";
 const WS_LABEL_CLNT: &str = "client";
@@ -668,87 +670,33 @@ where
             }
         }
 
-        if let Err(msg) = pumping &&
-            msg != WS_CLOSE_OK
-        {
-            debug!(
-                    proxy = P::name(),
-                    connection_id = %self.info.conn_id(),
-                    worker_id = %self.worker_id,
-                    msg = %msg,
-                    "Closing client websocket session..."
-            );
-            let _ = self // only 1 possible error (i.e. "already closed")
-                .clnt_tx
-                .clone() // .close() consumes it
-                .close(Some(actix_ws::CloseReason {
-                    code: awc::ws::CloseCode::Error,
-                    description: Some(String::from(WS_BKND_ERROR)),
-                }))
-                .await;
+        if let Err(reason) = pumping {
+            let (frame_clnt, frame_bknd) = match reason {
+                WS_CLOSE_OK => (
+                    actix_ws::CloseReason {
+                        code: awc::ws::CloseCode::Normal,
+                        description: WS_CLOSE_REASON_NORMAL.to_string().into(),
+                    },
+                    tungstenite::protocol::CloseFrame {
+                        code: tungstenite::protocol::frame::coding::CloseCode::Normal,
+                        reason: WS_CLOSE_REASON_NORMAL.into(),
+                    },
+                ),
 
-            debug!(
-                    proxy = P::name(),
-                    connection_id = %self.info.conn_id(),
-                    worker_id = %self.worker_id,
-                    msg = %msg,
-                    "Closing backend websocket session..."
-            );
-            if let Err(err) = self
-                .bknd_tx
-                .send(tungstenite::Message::Close(Some(tungstenite::protocol::CloseFrame {
-                    code: tungstenite::protocol::frame::coding::CloseCode::Error,
-                    reason: msg.into(),
-                })))
-                .await
-            {
-                error!(
-                    proxy = P::name(),
-                    connection_id = %self.info.conn_id(),
-                    worker_id = %self.worker_id,
-                    msg = %msg,
-                    error = ?err,
-                    "Failed to close backend websocket session"
-                );
-            }
-        } else {
-            debug!(
-                    proxy = P::name(),
-                    connection_id = %self.info.conn_id(),
-                    worker_id = %self.worker_id,
-                    "Closing client websocket session..."
-            );
-            let _ = self // only 1 possible error (i.e. "already closed")
-                .clnt_tx
-                .clone() // .close() consumes it
-                .close(Some(actix_ws::CloseReason {
-                    code: awc::ws::CloseCode::Normal,
-                    description: None,
-                }))
-                .await;
+                _ => (
+                    actix_ws::CloseReason {
+                        code: awc::ws::CloseCode::Error,
+                        description: reason.to_string().into(),
+                    },
+                    tungstenite::protocol::CloseFrame {
+                        code: tungstenite::protocol::frame::coding::CloseCode::Error,
+                        reason: reason.into(),
+                    },
+                ),
+            };
 
-            debug!(
-                    proxy = P::name(),
-                    connection_id = %self.info.conn_id(),
-                    worker_id = %self.worker_id,
-                    "Closing backend websocket session..."
-            );
-            if let Err(err) = self
-                .bknd_tx
-                .send(tungstenite::Message::Close(Some(tungstenite::protocol::CloseFrame {
-                    code: tungstenite::protocol::frame::coding::CloseCode::Normal,
-                    reason: Utf8Bytes::default(),
-                })))
-                .await
-            {
-                error!(
-                    proxy = P::name(),
-                    connection_id = %self.info.conn_id(),
-                    worker_id = %self.worker_id,
-                    error = ?err,
-                    "Failed to close backend websocket session"
-                );
-            }
+            _ = self.close_clnt_session(frame_clnt).await;
+            _ = self.close_bknd_session(frame_bknd).await;
         }
 
         info!(
@@ -849,7 +797,7 @@ where
         match clnt_msg {
             Some(Ok(msg)) => {
                 match msg {
-                    // binary
+                    // binary msg from client
                     actix_ws::Message::Binary(bytes) => {
                         #[cfg(feature = "chaos")]
                         if self.chaos.stream_is_blocked.load(Ordering::Relaxed) {
@@ -885,7 +833,7 @@ where
                         Ok(())
                     }
 
-                    // text
+                    // text msg from client
                     actix_ws::Message::Text(text) => {
                         #[cfg(feature = "chaos")]
                         if self.chaos.stream_is_blocked.load(Ordering::Relaxed) {
@@ -928,8 +876,16 @@ where
                         Ok(())
                     }
 
-                    // ping
+                    // ping msg from client
                     actix_ws::Message::Ping(bytes) => {
+                        #[cfg(debug_assertions)]
+                        debug!(
+                            proxy = P::name(),
+                            connection_id = %self.info.conn_id(),
+                            worker_id = %self.worker_id,
+                            "Handling client's ping..."
+                        );
+
                         #[cfg(feature = "chaos")]
                         if self.chaos.stream_is_blocked.load(Ordering::Relaxed) {
                             return Ok(());
@@ -961,8 +917,16 @@ where
                         Ok(())
                     }
 
-                    // pong
+                    // pong msg from client
                     actix_ws::Message::Pong(bytes) => {
+                        #[cfg(debug_assertions)]
+                        debug!(
+                            proxy = P::name(),
+                            connection_id = %self.info.conn_id(),
+                            worker_id = %self.worker_id,
+                            "Received pong form client"
+                        );
+
                         if let Some(pong) = ProxyWsPing::from_bytes(bytes) &&
                             let Some((_, ping)) = self.pings.remove_sync(&pong.id) &&
                             pong == ping
@@ -990,30 +954,26 @@ where
                         Ok(())
                     }
 
-                    // close
+                    // close msg from client
                     actix_ws::Message::Close(reason) => {
-                        if let Err(err) = self
-                            .bknd_tx
-                            .send(tungstenite::Message::Close(reason.map(|r| {
-                                tungstenite::protocol::CloseFrame {
-                                    code: tungstenite::protocol::frame::coding::CloseCode::from(
-                                        u16::from(r.code),
-                                    ),
-                                    reason: r.description.unwrap_or_default().into(),
-                                }
-                            })))
-                            .await
-                        {
-                            error!(
-                                proxy = P::name(),
-                                connection_id = %self.info.conn_id(),
-                                worker_id = %self.worker_id,
-                                error = ?err,
-                                "Failed to close backend websocket session"
-                            );
-                            return Err(WS_BKND_ERROR);
-                        }
-                        Err(WS_CLOSE_OK)
+                        return self
+                            .close_bknd_session(
+                                reason
+                                    .map(|r| tungstenite::protocol::CloseFrame {
+                                        code: tungstenite::protocol::frame::coding::CloseCode::from(
+                                            u16::from(r.code),
+                                        ),
+                                        reason: r
+                                            .description
+                                            .map_or(WS_CLOSE_REASON_NORMAL.into(), |r| r.into()),
+                                    })
+                                    .unwrap_or(tungstenite::protocol::CloseFrame {
+                                        code:
+                                            tungstenite::protocol::frame::coding::CloseCode::Normal,
+                                        reason: WS_CLOSE_REASON_NORMAL.into(),
+                                    }),
+                            )
+                            .await;
                     }
 
                     _ => Ok(()),
@@ -1134,6 +1094,14 @@ where
 
                     // ping
                     tungstenite::Message::Ping(bytes) => {
+                        #[cfg(debug_assertions)]
+                        debug!(
+                            proxy = P::name(),
+                            connection_id = %self.info.conn_id(),
+                            worker_id = %self.worker_id,
+                            "Handling backend's ping..."
+                        );
+
                         #[cfg(feature = "chaos")]
                         if self.chaos.stream_is_blocked.load(Ordering::Relaxed) {
                             return Ok(());
@@ -1168,6 +1136,14 @@ where
 
                     // pong
                     tungstenite::Message::Pong(bytes) => {
+                        #[cfg(debug_assertions)]
+                        debug!(
+                            proxy = P::name(),
+                            connection_id = %self.info.conn_id(),
+                            worker_id = %self.worker_id,
+                            "Received pong form backend"
+                        );
+
                         if let Some(pong) = ProxyWsPing::from_bytes(bytes) &&
                             let Some((_, ping)) = self.pings.remove_sync(&pong.id) &&
                             pong == ping
@@ -1197,25 +1173,19 @@ where
 
                     // close
                     tungstenite::Message::Close(reason) => {
-                        if let Err(err) = self
-                            .clnt_tx
-                            .clone() // .close() consumes it
-                            .close(reason.map(|reason| actix_ws::CloseReason {
-                                code: u16::from(reason.code).into(),
-                                description: reason.reason.to_string().into(),
-                            }))
-                            .await
-                        {
-                            error!(
-                                proxy = P::name(),
-                                connection_id = %self.info.conn_id(),
-                                worker_id = %self.worker_id,
-                                error = ?err,
-                                "Failed to proxy close websocket message to client"
-                            );
-                            return Err(WS_CLNT_ERROR);
-                        }
-                        Err(WS_CLOSE_OK)
+                        return self
+                            .close_clnt_session(
+                                reason
+                                    .map(|reason| actix_ws::CloseReason {
+                                        code: u16::from(reason.code).into(),
+                                        description: reason.reason.to_string().into(),
+                                    })
+                                    .unwrap_or(actix_ws::CloseReason {
+                                        code: awc::ws::CloseCode::Normal,
+                                        description: WS_CLOSE_REASON_UNSPECIFIED.to_string().into(),
+                                    }),
+                            )
+                            .await;
                     }
 
                     _ => Ok(()),
@@ -1243,6 +1213,72 @@ where
                 Err(WS_CLOSE_OK)
             }
         }
+    }
+
+    async fn close_clnt_session(
+        &mut self,
+        frame: actix_ws::CloseReason,
+    ) -> Result<(), &'static str> {
+        debug!(
+            proxy = P::name(),
+            connection_id = %self.info.conn_id(),
+            worker_id = %self.worker_id,
+            msg = ?frame.description,
+            "Closing client websocket session..."
+        );
+        let _ = self // only 1 possible "already closed" error (which we ignore)
+            .clnt_tx
+            .clone() // .close() consumes it
+            .close(Some(frame))
+            .await;
+        Ok(())
+    }
+
+    async fn close_bknd_session(
+        &mut self,
+        frame: tungstenite::protocol::CloseFrame,
+    ) -> Result<(), &'static str> {
+        debug!(
+            proxy = P::name(),
+            connection_id = %self.info.conn_id(),
+            worker_id = %self.worker_id,
+            msg = %frame.reason,
+            "Closing backend websocket session..."
+        );
+
+        if let Err(err) = self
+            .bknd_tx
+            .send(tungstenite::Message::Close(Some(
+                frame.clone(), // it's cheap to clone
+            )))
+            .await
+        {
+            if let tungstenite::error::Error::Protocol(protocol_err) = err {
+                if protocol_err == tungstenite::error::ProtocolError::SendAfterClosing {
+                    return Ok(());
+                }
+                error!(
+                    proxy = P::name(),
+                    connection_id = %self.info.conn_id(),
+                    worker_id = %self.worker_id,
+                    msg = %frame.reason,
+                    error = ?protocol_err,
+                    "Failed to close backend websocket session"
+                );
+            } else {
+                error!(
+                    proxy = P::name(),
+                    connection_id = %self.info.conn_id(),
+                    worker_id = %self.worker_id,
+                    msg = %frame.reason,
+                    error = ?err,
+                    "Failed to close backend websocket session"
+                );
+            }
+            return Err(WS_BKND_ERROR);
+        }
+
+        Ok(())
     }
 }
 
