@@ -1273,6 +1273,9 @@ where
             )))
             .await
         {
+            if let tungstenite::error::Error::AlreadyClosed = err {
+                return Ok(());
+            }
             if let tungstenite::error::Error::Protocol(protocol_err) = err {
                 if protocol_err == tungstenite::error::ProtocolError::SendAfterClosing {
                     return Ok(());
@@ -1296,6 +1299,17 @@ where
                 );
             }
             return Err(WS_BKND_ERROR);
+        }
+
+        if let Err(err) = self.bknd_tx.close().await {
+            error!(
+                proxy = P::name(),
+                connection_id = %self.info.conn_id(),
+                worker_id = %self.worker_id,
+                msg = %frame.reason,
+                error = ?err,
+                "Failed to close backend websocket session"
+            );
         }
 
         Ok(())
