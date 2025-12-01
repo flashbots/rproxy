@@ -4,4 +4,4 @@ pub(crate) mod http;
 pub(crate) mod ws;
 
 pub(crate) mod connection_guard;
-use connection_guard::ConnectionGuard;
+use connection_guard::{ConnectionGuard, TCP_KEEPALIVE_ATTEMPTS};

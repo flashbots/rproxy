@@ -40,6 +40,7 @@ use crate::{
         metrics::{LabelsProxyWs, Metrics},
         proxy::{
             ConnectionGuard,
+            TCP_KEEPALIVE_ATTEMPTS,
             config::ConfigTls,
             http::ProxyHttpRequestInfo,
             ws::{ProxyWsInner, config::ConfigProxyWs},
@@ -130,6 +131,8 @@ where
             }
         };
 
+        let keep_alive_timeout = config.backend_timeout().mul_f64(2.0);
+        let keep_alive_interval = keep_alive_timeout.div_f64(f64::from(*TCP_KEEPALIVE_ATTEMPTS));
         let workers_count = PARALLELISM.to_static();
 
         let shared = ProxyWsSharedState::<C, P>::new(config, &metrics);
@@ -156,7 +159,13 @@ where
                 .wrap(NormalizePath::new(TrailingSlash::Trim))
                 .default_service(web::route().to(Self::receive))
         })
-        .on_connect(ConnectionGuard::on_connect(P::name(), metrics, client_connections_count))
+        .keep_alive(keep_alive_interval)
+        .on_connect(ConnectionGuard::on_connect(
+            P::name(),
+            metrics,
+            client_connections_count,
+            keep_alive_timeout,
+        ))
         .shutdown_signal(canceller.cancelled_owned())
         .workers(workers_count);
 
@@ -205,6 +214,17 @@ where
             socket2::Domain::for_address(config.listen_address()),
             socket2::Type::STREAM,
             Some(socket2::Protocol::TCP),
+        )?;
+
+        // allow keep-alive packets
+        let keep_alive_timeout = config.backend_timeout().mul_f64(2.0);
+        let keep_alive_interval = keep_alive_timeout.div_f64(f64::from(*TCP_KEEPALIVE_ATTEMPTS));
+        socket.set_keepalive(true)?;
+        socket.set_tcp_keepalive(
+            &socket2::TcpKeepalive::new()
+                .with_time(keep_alive_interval)
+                .with_interval(keep_alive_interval)
+                .with_retries(*TCP_KEEPALIVE_ATTEMPTS as u32),
         )?;
 
         // must use non-blocking with tokio
@@ -924,7 +944,7 @@ where
                             proxy = P::name(),
                             connection_id = %self.info.conn_id(),
                             worker_id = %self.worker_id,
-                            "Received pong form client"
+                            "Received pong from client"
                         );
 
                         if let Some(pong) = ProxyWsPing::from_bytes(bytes) &&
@@ -1141,7 +1161,7 @@ where
                             proxy = P::name(),
                             connection_id = %self.info.conn_id(),
                             worker_id = %self.worker_id,
-                            "Received pong form backend"
+                            "Received pong from backend"
                         );
 
                         if let Some(pong) = ProxyWsPing::from_bytes(bytes) &&
@@ -1279,6 +1299,22 @@ where
         }
 
         Ok(())
+    }
+}
+
+#[cfg(debug_assertions)]
+impl<C, P> Drop for ProxyWsPump<C, P>
+where
+    C: ConfigProxyWs,
+    P: ProxyWsInner<C>,
+{
+    fn drop(&mut self) {
+        debug!(
+            proxy = P::name(),
+            connection_id = %self.info.conn_id(),
+            worker_id = %self.worker_id,
+            "Dropping websocket pump"
+        );
     }
 }
 

@@ -1,16 +1,50 @@
 use std::{
     any::Any,
+    os::fd::{AsFd, AsRawFd},
     sync::{
         Arc,
+        LazyLock,
         atomic::{AtomicI64, Ordering},
     },
+    time::Duration,
 };
 
 use actix_web::dev::Extensions;
+use sysctl::Sysctl;
 use tracing::{debug, warn};
 use uuid::Uuid;
 
 use crate::server::metrics::{LabelsProxy, Metrics};
+
+pub(crate) static TCP_KEEPALIVE_ATTEMPTS: LazyLock<libc::c_int> = LazyLock::new(|| {
+    #[cfg(target_os = "linux")]
+    {
+        let mut res: libc::c_int = 9;
+        if let Ok(ctl) = sysctl::Ctl::new("net.ipv4.tcp_keepalive_probes") &&
+            let Ok(value) = ctl.value() &&
+            let Ok(value) = value.into_int()
+        {
+            res = value
+        }
+        return res;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let mut res: libc::c_int = 8;
+        if let Ok(ctl) = sysctl::Ctl::new("net.ipv4.tcp_keepalive_probes") &&
+            let Ok(value) = ctl.value() &&
+            let Ok(value) = value.into_int()
+        {
+            res = value
+        }
+
+        return res;
+    }
+
+    #[allow(unreachable_code)]
+    8
+});
 
 // ProxyConnectionGuard ------------------------------------------------
 
@@ -47,7 +81,12 @@ impl ConnectionGuard {
         proxy: &'static str,
         metrics: Arc<Metrics>,
         client_connections_count: Arc<AtomicI64>,
+        keep_alive_timeout: Duration,
     ) -> impl Fn(&dyn Any, &mut Extensions) {
+        let keep_alive_attempts: libc::c_int = *TCP_KEEPALIVE_ATTEMPTS;
+        let keep_alive_interval: libc::c_int =
+            keep_alive_timeout.div_f64(f64::from(keep_alive_attempts)).as_secs_f64().ceil() as i32;
+
         move |connection, extensions| {
             {
                 let val = client_connections_count.fetch_add(1, Ordering::Relaxed) + 1;
@@ -69,6 +108,46 @@ impl ConnectionGuard {
                 );
                 None
             };
+
+            if let Some(stream) = stream {
+                #[cfg(target_os = "linux")]
+                {
+                    libc::setsockopt(
+                        stream.as_fd().as_raw_fd(),
+                        libc::IPPROTO_TCP,
+                        libc::TCP_KEEPIDLE,
+                        &keep_alive_interval as *const _ as *const libc::c_void,
+                        size_of_val(&keep_alive_interval) as libc::socklen_t,
+                    );
+                    libc::setsockopt(
+                        stream.as_fd().as_raw_fd(),
+                        libc::IPPROTO_TCP,
+                        libc::TCP_KEEPINTVL,
+                        &keep_alive_interval as *const _ as *const libc::c_void,
+                        size_of_val(&keep_alive_interval) as libc::socklen_t,
+                    );
+                    libc::setsockopt(
+                        stream.as_fd().as_raw_fd(),
+                        libc::IPPROTO_TCP,
+                        libc::TCP_KEEPCNT,
+                        &keep_alive_attempts as *const _ as *const libc::c_void,
+                        size_of_val(&keep_alive_attempts) as libc::socklen_t,
+                    );
+                }
+
+                #[cfg(target_os = "macos")]
+                {
+                    unsafe {
+                        libc::setsockopt(
+                            stream.as_fd().as_raw_fd(),
+                            libc::IPPROTO_TCP,
+                            libc::TCP_KEEPALIVE,
+                            &keep_alive_interval as *const _ as *const _,
+                            std::mem::size_of_val(&keep_alive_interval) as libc::socklen_t,
+                        );
+                    }
+                }
+            }
 
             if let Some(stream) = stream {
                 let id = Uuid::now_v7();

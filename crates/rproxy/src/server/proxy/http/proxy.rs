@@ -3,6 +3,7 @@ use std::{
     fmt::Debug,
     marker::PhantomData,
     mem,
+    ops::Add,
     pin::Pin,
     str::FromStr,
     sync::{
@@ -10,6 +11,7 @@ use std::{
         atomic::{AtomicI64, AtomicUsize, Ordering},
     },
     task::{Context, Poll},
+    time::Duration,
 };
 
 use actix::{Actor, AsyncContext, WrapFuture};
@@ -53,6 +55,7 @@ use crate::{
         metrics::{LabelsProxy, LabelsProxyClientInfo, LabelsProxyHttpJrpc, Metrics},
         proxy::{
             ConnectionGuard,
+            TCP_KEEPALIVE_ATTEMPTS,
             config::ConfigTls,
             http::{
                 ProxyHttpInner,
@@ -62,8 +65,6 @@ use crate::{
     },
     utils::{Loggable, decompress, is_hop_by_hop_header, raw_transaction_to_hash},
 };
-
-const TCP_KEEPALIVE_ATTEMPTS: u32 = 8;
 
 // ProxyHttp -----------------------------------------------------------
 
@@ -160,8 +161,8 @@ where
             }
         };
 
-        let keep_alive =
-            config.idle_connection_timeout().div_f64(f64::from(TCP_KEEPALIVE_ATTEMPTS));
+        let keep_alive_timeout = config.idle_connection_timeout().add(Duration::from_millis(1000));
+        let keep_alive_interval = keep_alive_timeout.div_f64(f64::from(*TCP_KEEPALIVE_ATTEMPTS));
         let workers_count =
             std::cmp::min(PARALLELISM.to_static(), config.backend_max_concurrent_requests());
         let max_concurrent_requests_per_worker =
@@ -206,10 +207,12 @@ where
                     P::name(),
                     metrics.clone(),
                     client_connections_count.clone(),
+                    keep_alive_timeout,
                 );
 
                 let h1 = actix_http::HttpService::build()
-                    .keep_alive(keep_alive)
+                    .client_disconnect_timeout(Duration::from_millis(1000)) // same as in HttpServer
+                    .keep_alive(keep_alive_interval)
                     .on_connect_ext(move |io: &_, ext: _| {
                         (on_connect)(io as &dyn std::any::Any, ext)
                     })
@@ -237,10 +240,12 @@ where
                     P::name(),
                     metrics.clone(),
                     client_connections_count.clone(),
+                    keep_alive_timeout,
                 );
 
                 let h1 = actix_http::HttpService::build()
-                    .keep_alive(keep_alive)
+                    .client_disconnect_timeout(Duration::from_millis(1000)) // same as in HttpServer
+                    .keep_alive(keep_alive_interval)
                     .on_connect_ext(move |io: &_, ext: _| {
                         (on_connect)(io as &dyn std::any::Any, ext)
                     })
@@ -289,6 +294,17 @@ where
             Some(socket2::Protocol::TCP),
         )?;
 
+        // allow keep-alive packets
+        let keep_alive_timeout = config.idle_connection_timeout().add(Duration::from_millis(1000));
+        let keep_alive_interval = keep_alive_timeout.div_f64(f64::from(*TCP_KEEPALIVE_ATTEMPTS));
+        socket.set_keepalive(true)?;
+        socket.set_tcp_keepalive(
+            &socket2::TcpKeepalive::new()
+                .with_time(keep_alive_interval)
+                .with_interval(keep_alive_interval)
+                .with_retries(*TCP_KEEPALIVE_ATTEMPTS as u32),
+        )?;
+
         // must use non-blocking with tokio
         socket.set_nonblocking(true)?;
 
@@ -297,19 +313,6 @@ where
 
         // allow binding while there are still residual connections in TIME_WAIT
         socket.set_reuse_address(true)?;
-
-        if !config.idle_connection_timeout().is_zero() {
-            socket.set_tcp_keepalive(
-                &socket2::TcpKeepalive::new()
-                    .with_time(
-                        config.idle_connection_timeout().div_f64(f64::from(TCP_KEEPALIVE_ATTEMPTS)),
-                    )
-                    .with_interval(
-                        config.idle_connection_timeout().div_f64(f64::from(TCP_KEEPALIVE_ATTEMPTS)),
-                    )
-                    .with_retries(TCP_KEEPALIVE_ATTEMPTS - 1),
-            )?;
-        }
 
         socket.bind(&socket2::SockAddr::from(config.listen_address()))?;
 
