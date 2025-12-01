@@ -7,6 +7,7 @@ export LC_ALL=C
 export SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)
 export TZ=UTC
 
+FEATURES=${FEATURES:-default}
 TARGET=${TARGET:-$( rustc --print host-tuple )}
 
 export RUSTFLAGS="\
@@ -26,6 +27,7 @@ export CARGO_TARGET_$( echo "${TARGET}" | tr '[:lower:]' '[:upper:]' | tr '-' '_
 "
 
 cargo build --package rproxy \
+  --features ${FEATURES} \
   --locked \
   --release \
   --target ${TARGET}

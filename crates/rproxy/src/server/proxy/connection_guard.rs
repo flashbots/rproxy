@@ -127,7 +127,6 @@ impl Drop for ConnectionGuard {
         self.metrics.client_connections_active_count.get_or_create(&metric_labels).set(val);
         self.metrics.client_connections_closed_count.get_or_create(&metric_labels).inc();
 
-        #[cfg(debug_assertions)]
         debug!(
             proxy = self.proxy,
             connection_id = %self.id,
