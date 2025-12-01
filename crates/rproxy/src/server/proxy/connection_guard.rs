@@ -111,7 +111,7 @@ impl ConnectionGuard {
 
             if let Some(stream) = stream {
                 #[cfg(target_os = "linux")]
-                {
+                unsafe {
                     libc::setsockopt(
                         stream.as_fd().as_raw_fd(),
                         libc::IPPROTO_TCP,
@@ -136,16 +136,14 @@ impl ConnectionGuard {
                 }
 
                 #[cfg(target_os = "macos")]
-                {
-                    unsafe {
-                        libc::setsockopt(
-                            stream.as_fd().as_raw_fd(),
-                            libc::IPPROTO_TCP,
-                            libc::TCP_KEEPALIVE,
-                            &keep_alive_interval as *const _ as *const _,
-                            std::mem::size_of_val(&keep_alive_interval) as libc::socklen_t,
-                        );
-                    }
+                unsafe {
+                    libc::setsockopt(
+                        stream.as_fd().as_raw_fd(),
+                        libc::IPPROTO_TCP,
+                        libc::TCP_KEEPALIVE,
+                        &keep_alive_interval as *const _ as *const _,
+                        std::mem::size_of_val(&keep_alive_interval) as libc::socklen_t,
+                    );
                 }
             }
 
