@@ -22,6 +22,10 @@ pub(crate) fn setup_keepalive(
 ) -> std::io::Result<()> {
     let interval_sec = interval.as_secs_f64().ceil() as i32;
 
+    if interval_sec == 0 {
+        return Ok(());
+    }
+
     #[cfg(target_os = "linux")]
     unsafe {
         use std::os::fd::AsRawFd;
