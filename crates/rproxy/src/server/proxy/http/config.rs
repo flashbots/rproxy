@@ -9,6 +9,7 @@ pub(crate) trait ConfigProxyHttp: Clone + Send + Unpin + 'static {
     fn backend_timeout(&self) -> Duration;
     fn backend_url(&self) -> Url;
     fn idle_connection_timeout(&self) -> Duration;
+    fn keepalive_interval(&self) -> Duration;
     fn listen_address(&self) -> SocketAddr;
     fn log_mirrored_requests(&self) -> bool;
     fn log_mirrored_responses(&self) -> bool;

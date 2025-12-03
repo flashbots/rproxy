@@ -46,7 +46,7 @@ use crate::{
             ws::{ProxyWsInner, config::ConfigProxyWs},
         },
     },
-    utils::{Loggable, raw_transaction_to_hash},
+    utils::{Loggable, raw_transaction_to_hash, setup_keepalive},
 };
 
 const WS_PING_INTERVAL_SECONDS: u64 = 1;
@@ -131,11 +131,9 @@ where
             }
         };
 
-        let keep_alive_timeout = config.backend_timeout().mul_f64(2.0);
-        let keep_alive_interval = keep_alive_timeout.div_f64(f64::from(*TCP_KEEPALIVE_ATTEMPTS));
         let workers_count = PARALLELISM.to_static();
 
-        let shared = ProxyWsSharedState::<C, P>::new(config, &metrics);
+        let shared = ProxyWsSharedState::<C, P>::new(config.clone(), &metrics);
         let client_connections_count = shared.client_connections_count.clone();
         let worker_canceller = canceller.clone();
         let worker_resetter = resetter.clone();
@@ -159,12 +157,12 @@ where
                 .wrap(NormalizePath::new(TrailingSlash::Trim))
                 .default_service(web::route().to(Self::receive))
         })
-        .keep_alive(keep_alive_interval)
+        .keep_alive(config.keep_alive_interval())
         .on_connect(ConnectionGuard::on_connect(
             P::name(),
             metrics,
             client_connections_count,
-            keep_alive_timeout,
+            config.keep_alive_interval(),
         ))
         .shutdown_signal(canceller.cancelled_owned())
         .workers(workers_count);
@@ -331,6 +329,37 @@ where
                 return;
             }
         };
+
+        match bknd_stream.get_ref() {
+            tokio_tungstenite::MaybeTlsStream::Plain(tcp_stream) => {
+                if let Err(err) = setup_keepalive(tcp_stream, this.config().keep_alive_interval()) {
+                    warn!(
+                        proxy = P::name(),
+                        request_id = %info.req_id(),
+                        connection_id = %info.conn_id(),
+                        worker_id = %this.id,
+                        error = ?err,
+                        "Failed to set keepalive interval"
+                    );
+                }
+            }
+
+            tokio_tungstenite::MaybeTlsStream::Rustls(tls_stream) => {
+                let (tcp_stream, _) = tls_stream.get_ref();
+                if let Err(err) = setup_keepalive(tcp_stream, this.config().keep_alive_interval()) {
+                    warn!(
+                        proxy = P::name(),
+                        request_id = %info.req_id(),
+                        connection_id = %info.conn_id(),
+                        worker_id = %this.id,
+                        error = ?err,
+                        "Failed to set keepalive interval"
+                    );
+                }
+            }
+
+            &_ => {}
+        }
 
         let (bknd_tx, bknd_rx) = bknd_stream.split();
 

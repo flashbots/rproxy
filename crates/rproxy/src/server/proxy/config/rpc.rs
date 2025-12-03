@@ -73,6 +73,18 @@ pub(crate) struct ConfigRpc {
     )]
     pub(crate) idle_connection_timeout: Duration,
 
+    /// interval between tcp keepalive packets on rpc connections
+    #[arg(
+        default_value = "5s",
+        env = "RPROXY_RPC_KEEPALIVE_INTERVAL",
+        help_heading = "rpc",
+        long("rpc-keepalive-interval"),
+        name("rpc_keepalive_interval"),
+        value_name = "duration",
+        value_parser = humantime::parse_duration
+    )]
+    pub(crate) keepalive_interval: Duration,
+
     /// host:port for rpc proxy
     #[arg(
         default_value = "0.0.0.0:8645",
@@ -347,6 +359,11 @@ impl ConfigProxyHttp for ConfigRpc {
     #[inline]
     fn idle_connection_timeout(&self) -> Duration {
         self.idle_connection_timeout
+    }
+
+    #[inline]
+    fn keepalive_interval(&self) -> Duration {
+        self.keepalive_interval
     }
 
     #[inline]

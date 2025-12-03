@@ -10,6 +10,19 @@ use crate::{config::ALREADY_VALIDATED, server::proxy::ws::config::ConfigProxyWs}
 
 #[derive(Args, Clone, Debug)]
 pub(crate) struct ConfigFlashblocks {
+    /// timeout to establish backend connections of to receive pong
+    /// websocket response
+    #[arg(
+        default_value = "30s",
+        env = "RPROXY_FLASHBLOCKS_BACKEND_TIMEOUT",
+        help_heading = "flashblocks",
+        long("flashblocks-backend-timeout"),
+        name("flashblocks_backend_timeout"),
+        value_name = "duration",
+        value_parser = humantime::parse_duration
+    )]
+    pub(crate) backend_timeout: Duration,
+
     /// url of flashblocks backend
     #[arg(
         default_value = "ws://127.0.0.1:11111",
@@ -29,19 +42,17 @@ pub(crate) struct ConfigFlashblocks {
         name("flashblocks_enabled")
     )]
     pub(crate) enabled: bool,
-
-    /// timeout to establish backend connections of to receive pong
-    /// websocket response
+    /// interval between tcp keepalive packets on flashblocks connections
     #[arg(
-        default_value = "30s",
-        env = "RPROXY_FLASHBLOCKS_BACKEND_TIMEOUT",
+        default_value = "5s",
+        env = "RPROXY_FLASHBLOCKS_KEEPALIVE_INTERVAL",
         help_heading = "flashblocks",
-        long("flashblocks-backend-timeout"),
-        name("flashblocks_backend_timeout"),
+        long("flashblocks-keepalive-interval"),
+        name("flashblocks_keepalive_interval"),
         value_name = "duration",
         value_parser = humantime::parse_duration
     )]
-    pub(crate) backend_timeout: Duration,
+    pub(crate) keepalive_interval: Duration,
 
     /// host:port for flashblocks proxy
     #[arg(
@@ -210,6 +221,11 @@ impl ConfigProxyWs for ConfigFlashblocks {
     #[inline]
     fn backend_url(&self) -> tungstenite::http::Uri {
         self.backend_url.parse::<tungstenite::http::Uri>().expect(ALREADY_VALIDATED)
+    }
+
+    #[inline]
+    fn keep_alive_interval(&self) -> Duration {
+        self.keepalive_interval
     }
 
     #[inline]

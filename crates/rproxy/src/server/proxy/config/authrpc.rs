@@ -84,6 +84,18 @@ pub(crate) struct ConfigAuthrpc {
     )]
     pub(crate) idle_connection_timeout: Duration,
 
+    /// interval between tcp keepalive packets on authrpc connections
+    #[arg(
+        default_value = "5s",
+        env = "RPROXY_AUTHRPC_KEEPALIVE_INTERVAL",
+        help_heading = "authrpc",
+        long("authrpc-keepalive-interval"),
+        name("authrpc_keepalive_interval"),
+        value_name = "duration",
+        value_parser = humantime::parse_duration
+    )]
+    pub(crate) keepalive_interval: Duration,
+
     /// host:port for authrpc proxy
     #[arg(
         default_value = "0.0.0.0:8651",
@@ -351,6 +363,11 @@ impl ConfigProxyHttp for ConfigAuthrpc {
     #[inline]
     fn idle_connection_timeout(&self) -> Duration {
         self.idle_connection_timeout
+    }
+
+    #[inline]
+    fn keepalive_interval(&self) -> Duration {
+        self.keepalive_interval
     }
 
     #[inline]

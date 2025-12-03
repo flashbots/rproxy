@@ -161,8 +161,6 @@ where
             }
         };
 
-        let keep_alive_timeout = config.idle_connection_timeout().add(Duration::from_millis(1000));
-        let keep_alive_interval = keep_alive_timeout.div_f64(f64::from(*TCP_KEEPALIVE_ATTEMPTS));
         let workers_count =
             std::cmp::min(PARALLELISM.to_static(), config.backend_max_concurrent_requests());
         let max_concurrent_requests_per_worker =
@@ -195,6 +193,8 @@ where
 
         let server = if tls.enabled() {
             server.listen(P::name(), listener, move || {
+                let config = shared.config();
+
                 let this =
                     web::Data::new(Self::new(shared.clone(), max_concurrent_requests_per_worker));
 
@@ -207,12 +207,12 @@ where
                     P::name(),
                     metrics.clone(),
                     client_connections_count.clone(),
-                    keep_alive_timeout,
+                    config.keepalive_interval(),
                 );
 
                 let h1 = actix_http::HttpService::build()
                     .client_disconnect_timeout(Duration::from_millis(1000)) // same as in HttpServer
-                    .keep_alive(keep_alive_interval)
+                    .keep_alive(config.keepalive_interval())
                     .on_connect_ext(move |io: &_, ext: _| {
                         (on_connect)(io as &dyn std::any::Any, ext)
                     })
@@ -228,6 +228,8 @@ where
             })
         } else {
             server.listen(P::name(), listener, move || {
+                let config = shared.config();
+
                 let this =
                     web::Data::new(Self::new(shared.clone(), max_concurrent_requests_per_worker));
 
@@ -240,12 +242,12 @@ where
                     P::name(),
                     metrics.clone(),
                     client_connections_count.clone(),
-                    keep_alive_timeout,
+                    config.keepalive_interval(),
                 );
 
                 let h1 = actix_http::HttpService::build()
                     .client_disconnect_timeout(Duration::from_millis(1000)) // same as in HttpServer
-                    .keep_alive(keep_alive_interval)
+                    .keep_alive(config.keepalive_interval())
                     .on_connect_ext(move |io: &_, ext: _| {
                         (on_connect)(io as &dyn std::any::Any, ext)
                     })
