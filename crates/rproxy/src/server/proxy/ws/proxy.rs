@@ -30,7 +30,7 @@ use scc::HashMap;
 use time::{UtcDateTime, format_description::well_known::Iso8601};
 use tokio::{net::TcpStream, sync::broadcast};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 use x509_parser::asn1_rs::ToStatic;
 
@@ -276,7 +276,7 @@ where
         info: ProxyHttpRequestInfo,
     ) {
         let bknd_uri = this.backend.new_backend_uri(&info);
-        trace!(
+        debug!(
             proxy = P::name(),
             request_id = %info.req_id(),
             connection_id = %info.conn_id(),
@@ -358,7 +358,7 @@ where
                 }
             }
 
-            &_ => {}
+            &_ => {} // there's nothing else
         }
 
         let (bknd_tx, bknd_rx) = bknd_stream.split();
@@ -693,6 +693,26 @@ where
         let mut resetter = self.resetter.subscribe();
 
         while pumping.is_ok() && !self.canceller.is_cancelled() && !resetter.is_closed() {
+            #[cfg(feature = "chaos")]
+            if self.chaos.stream_is_blocked.load(Ordering::Relaxed) {
+                tokio::select! {
+                    _ = self.canceller.cancelled() => {
+                        break;
+                    }
+
+                    _ = resetter.recv() => {
+                        break;
+                    }
+
+                    // client => backend
+                    clnt_msg = self.clnt_rx.next() => {
+                        pumping = self.pump_clnt_to_bknd(UtcDateTime::now(), clnt_msg).await;
+                    }
+                }
+
+                continue;
+            }
+
             tokio::select! {
                 _ = self.canceller.cancelled() => {
                     break;
@@ -834,13 +854,19 @@ where
         if !self.chaos.stream_is_blocked.load(Ordering::Relaxed) &&
             rand::random::<f64>() < self.shared.config().chaos_probability_stream_blocked()
         {
-            debug!(
+            warn!(
                 proxy = P::name(),
                 connection_id = %self.info.conn_id(),
                 worker_id = %self.worker_id,
                 "Blocking the stream (chaos)"
             );
             self.chaos.stream_is_blocked.store(true, Ordering::Relaxed);
+            _ = self
+                .close_bknd_session(tungstenite::protocol::CloseFrame {
+                    code: tungstenite::protocol::frame::coding::CloseCode::Normal,
+                    reason: WS_CLOSE_REASON_NORMAL.into(),
+                })
+                .await;
         }
 
         match clnt_msg {
@@ -927,6 +953,11 @@ where
 
                     // ping msg from client
                     actix_ws::Message::Ping(bytes) => {
+                        #[cfg(feature = "chaos")]
+                        if self.chaos.stream_is_blocked.load(Ordering::Relaxed) {
+                            return Ok(());
+                        }
+
                         #[cfg(debug_assertions)]
                         debug!(
                             proxy = P::name(),
@@ -934,11 +965,6 @@ where
                             worker_id = %self.worker_id,
                             "Handling client's ping..."
                         );
-
-                        #[cfg(feature = "chaos")]
-                        if self.chaos.stream_is_blocked.load(Ordering::Relaxed) {
-                            return Ok(());
-                        }
 
                         #[cfg(feature = "chaos")]
                         if rand::random::<f64>() <
@@ -1061,13 +1087,19 @@ where
         if !self.chaos.stream_is_blocked.load(Ordering::Relaxed) &&
             rand::random::<f64>() < self.shared.config().chaos_probability_stream_blocked()
         {
-            debug!(
+            warn!(
                 proxy = P::name(),
                 connection_id = %self.info.conn_id(),
                 worker_id = %self.worker_id,
                 "Blocking the stream (chaos)"
             );
             self.chaos.stream_is_blocked.store(true, Ordering::Relaxed);
+            _ = self
+                .close_bknd_session(tungstenite::protocol::CloseFrame {
+                    code: tungstenite::protocol::frame::coding::CloseCode::Normal,
+                    reason: WS_CLOSE_REASON_NORMAL.into(),
+                })
+                .await;
         }
 
         match bknd_msg {
@@ -1143,6 +1175,11 @@ where
 
                     // ping
                     tungstenite::Message::Ping(bytes) => {
+                        #[cfg(feature = "chaos")]
+                        if self.chaos.stream_is_blocked.load(Ordering::Relaxed) {
+                            return Ok(());
+                        }
+
                         #[cfg(debug_assertions)]
                         debug!(
                             proxy = P::name(),
@@ -1150,11 +1187,6 @@ where
                             worker_id = %self.worker_id,
                             "Handling backend's ping..."
                         );
-
-                        #[cfg(feature = "chaos")]
-                        if self.chaos.stream_is_blocked.load(Ordering::Relaxed) {
-                            return Ok(());
-                        }
 
                         #[cfg(feature = "chaos")]
                         if rand::random::<f64>() <
@@ -1472,7 +1504,7 @@ impl ProxyWsPing {
         let id = Uuid::from_u128(bytes.get_u128());
         let conn_id = Uuid::from_u128(bytes.get_u128());
         let Ok(timestamp) = UtcDateTime::from_unix_timestamp_nanos(bytes.get_i128()) else {
-            return None
+            return None;
         };
 
         Some(Self { id, conn_id, timestamp })
