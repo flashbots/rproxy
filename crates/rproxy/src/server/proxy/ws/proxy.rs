@@ -1,6 +1,7 @@
 use std::{
     io::Write,
     marker::PhantomData,
+    mem,
     str::FromStr,
     sync::{
         Arc,
@@ -372,8 +373,8 @@ where
             resetter: this.resetter.clone(),
             clnt_tx,
             clnt_rx,
-            bknd_tx,
-            bknd_rx,
+            bknd_tx: Some(bknd_tx),
+            bknd_rx: Some(bknd_rx),
             pings: HashMap::new(),
             ping_balance_bknd: AtomicI64::new(0),
             ping_balance_clnt: AtomicI64::new(0),
@@ -662,8 +663,8 @@ where
 
     clnt_tx: Session,
     clnt_rx: MessageStream,
-    bknd_tx: SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, tungstenite::Message>,
-    bknd_rx: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
+    bknd_tx: Option<SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, tungstenite::Message>>,
+    bknd_rx: Option<SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>>,
 
     pings: HashMap<Uuid, ProxyWsPing>,
     ping_balance_clnt: AtomicI64,
@@ -734,7 +735,12 @@ where
                 }
 
                 // backend => client
-                bknd_msg = self.bknd_rx.next() => {
+                bknd_msg = async {
+                    match &mut self.bknd_rx {
+                        Some(bknd_rx) => bknd_rx.next().await,
+                        None => None,
+                    }
+                } => {
                     pumping = self.pump_bknd_to_cli(UtcDateTime::now(), bknd_msg).await;
                 }
             }
@@ -828,8 +834,9 @@ where
             }
 
             let bknd_ping = ProxyWsPing::new(self.info.conn_id());
-            if let Err(err) =
-                self.bknd_tx.send(tungstenite::Message::Ping(bknd_ping.to_bytes())).await
+            if let Some(bknd_tx) = &mut self.bknd_tx &&
+                let Err(err) =
+                    bknd_tx.send(tungstenite::Message::Ping(bknd_ping.to_bytes())).await
             {
                 error!(
                     proxy = P::name(),
@@ -880,8 +887,9 @@ where
                             return Ok(());
                         }
 
-                        if let Err(err) =
-                            self.bknd_tx.send(tungstenite::Message::Binary(bytes.clone())).await
+                        if let Some(bknd_tx) = &mut self.bknd_tx &&
+                            let Err(err) =
+                                bknd_tx.send(tungstenite::Message::Binary(bytes.clone())).await
                         {
                             error!(
                                 proxy = P::name(),
@@ -916,15 +924,15 @@ where
                             return Ok(());
                         }
 
-                        if let Err(err) = self
-                            .bknd_tx
-                            .send(tungstenite::Message::Text(unsafe {
-                                // safety: it's from client's ws message => must be valid utf-8
-                                tungstenite::protocol::frame::Utf8Bytes::from_bytes_unchecked(
-                                    text.clone().into_bytes(),
-                                )
-                            }))
-                            .await
+                        if let Some(bknd_tx) = &mut self.bknd_tx &&
+                            let Err(err) = bknd_tx
+                                .send(tungstenite::Message::Text(unsafe {
+                                    // safety: it's from client's ws message => must be valid utf-8
+                                    tungstenite::protocol::frame::Utf8Bytes::from_bytes_unchecked(
+                                        text.clone().into_bytes(),
+                                    )
+                                }))
+                                .await
                         {
                             error!(
                                 proxy = P::name(),
@@ -1202,7 +1210,8 @@ where
                             return Ok(());
                         }
 
-                        if let Err(err) = self.bknd_tx.send(tungstenite::Message::Pong(bytes)).await
+                        if let Some(bknd_tx) = &mut self.bknd_tx &&
+                            let Err(err) = bknd_tx.send(tungstenite::Message::Pong(bytes)).await
                         {
                             error!(
                                 proxy = P::name(),
@@ -1320,37 +1329,50 @@ where
         &mut self,
         frame: tungstenite::protocol::CloseFrame,
     ) -> Result<(), &'static str> {
-        debug!(
-            proxy = P::name(),
-            connection_id = %self.info.conn_id(),
-            worker_id = %self.worker_id,
-            msg = %frame.reason,
-            "Closing backend websocket session..."
-        );
+        if let Some(mut bknd_tx) = mem::take(&mut self.bknd_tx) {
+            debug!(
+                proxy = P::name(),
+                connection_id = %self.info.conn_id(),
+                worker_id = %self.worker_id,
+                msg = %frame.reason,
+                "Closing backend websocket session..."
+            );
 
-        if let Err(err) = self
-            .bknd_tx
-            .send(tungstenite::Message::Close(Some(
-                frame.clone(), // it's cheap to clone
-            )))
-            .await
-        {
-            if let tungstenite::error::Error::AlreadyClosed = err {
-                return Ok(());
-            }
-            if let tungstenite::error::Error::Protocol(protocol_err) = err {
-                if protocol_err == tungstenite::error::ProtocolError::SendAfterClosing {
+            if let Err(err) = bknd_tx
+                .send(tungstenite::Message::Close(Some(
+                    frame.clone(), // it's cheap to clone
+                )))
+                .await
+            {
+                if let tungstenite::error::Error::AlreadyClosed = err {
                     return Ok(());
                 }
-                error!(
-                    proxy = P::name(),
-                    connection_id = %self.info.conn_id(),
-                    worker_id = %self.worker_id,
-                    msg = %frame.reason,
-                    error = ?protocol_err,
-                    "Failed to close backend websocket session"
-                );
-            } else {
+                if let tungstenite::error::Error::Protocol(protocol_err) = err {
+                    if protocol_err == tungstenite::error::ProtocolError::SendAfterClosing {
+                        return Ok(());
+                    }
+                    error!(
+                        proxy = P::name(),
+                        connection_id = %self.info.conn_id(),
+                        worker_id = %self.worker_id,
+                        msg = %frame.reason,
+                        error = ?protocol_err,
+                        "Failed to close backend websocket session"
+                    );
+                } else {
+                    error!(
+                        proxy = P::name(),
+                        connection_id = %self.info.conn_id(),
+                        worker_id = %self.worker_id,
+                        msg = %frame.reason,
+                        error = ?err,
+                        "Failed to close backend websocket session"
+                    );
+                }
+                return Err(WS_BKND_ERROR);
+            }
+
+            if let Err(err) = bknd_tx.close().await {
                 error!(
                     proxy = P::name(),
                     connection_id = %self.info.conn_id(),
@@ -1360,19 +1382,9 @@ where
                     "Failed to close backend websocket session"
                 );
             }
-            return Err(WS_BKND_ERROR);
         }
 
-        if let Err(err) = self.bknd_tx.close().await {
-            error!(
-                proxy = P::name(),
-                connection_id = %self.info.conn_id(),
-                worker_id = %self.worker_id,
-                msg = %frame.reason,
-                error = ?err,
-                "Failed to close backend websocket session"
-            );
-        }
+        drop(mem::take(&mut self.bknd_rx));
 
         Ok(())
     }
