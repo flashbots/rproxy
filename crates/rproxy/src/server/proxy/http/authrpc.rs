@@ -36,7 +36,7 @@ impl ProxyHttpInner<ConfigAuthrpc> for ProxyHttpInnerAuthrpc {
         Self {
             config,
             fcu_cache: Cache::builder()
-                .time_to_live(Duration::from_secs(60))
+                .time_to_live(Duration::from_millis(60000))
                 .max_capacity(4096)
                 .build_with_hasher(FxBuildHasher),
         }

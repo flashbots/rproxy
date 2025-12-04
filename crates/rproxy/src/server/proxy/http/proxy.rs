@@ -311,7 +311,7 @@ where
         socket.set_nonblocking(true)?;
 
         // allow time to flush buffers on close
-        socket.set_linger(Some(config.backend_timeout()))?;
+        socket.set_linger(Some(Duration::from_millis(5000)))?;
 
         // allow binding while there are still residual connections in TIME_WAIT
         socket.set_reuse_address(true)?;

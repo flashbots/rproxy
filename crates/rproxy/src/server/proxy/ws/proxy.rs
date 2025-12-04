@@ -229,7 +229,7 @@ where
         socket.set_nonblocking(true)?;
 
         // allow time to flush buffers on close
-        socket.set_linger(Some(config.backend_timeout()))?;
+        socket.set_linger(Some(Duration::from_millis(5000)))?;
 
         // allow binding to the socket while there are still TIME_WAIT connections
         socket.set_reuse_address(true)?;
@@ -686,7 +686,8 @@ where
             "Starting websocket pump..."
         );
 
-        let mut heartbeat = tokio::time::interval(Duration::from_secs(WS_PING_INTERVAL_SECONDS));
+        let mut heartbeat =
+            tokio::time::interval(Duration::from_millis(WS_PING_INTERVAL_SECONDS * 1000));
 
         let mut pumping: Result<(), &str> = Ok(());
 
