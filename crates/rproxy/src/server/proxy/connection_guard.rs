@@ -2,14 +2,12 @@ use std::{
     any::Any,
     sync::{
         Arc,
-        LazyLock,
         atomic::{AtomicI64, Ordering},
     },
     time::Duration,
 };
 
 use actix_web::dev::Extensions;
-use sysctl::Sysctl;
 use tracing::{debug, warn};
 use uuid::Uuid;
 
@@ -17,36 +15,6 @@ use crate::{
     server::metrics::{LabelsProxy, Metrics},
     utils::setup_keepalive,
 };
-
-pub(crate) static TCP_KEEPALIVE_ATTEMPTS: LazyLock<libc::c_int> = LazyLock::new(|| {
-    #[cfg(target_os = "linux")]
-    {
-        let mut res: libc::c_int = 9;
-        if let Ok(ctl) = sysctl::Ctl::new("net.ipv4.tcp_keepalive_probes") &&
-            let Ok(value) = ctl.value() &&
-            let Ok(value) = value.into_int()
-        {
-            res = value
-        }
-        return res;
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        let mut res: libc::c_int = 8;
-        if let Ok(ctl) = sysctl::Ctl::new("net.ipv4.tcp_keepalive_probes") &&
-            let Ok(value) = ctl.value() &&
-            let Ok(value) = value.into_int()
-        {
-            res = value
-        }
-
-        return res;
-    }
-
-    #[allow(unreachable_code)]
-    8
-});
 
 // ProxyConnectionGuard ------------------------------------------------
 

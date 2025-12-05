@@ -7,7 +7,8 @@ use tungstenite::http::Uri;
 pub(crate) trait ConfigProxyWs: Clone + Send + Unpin + 'static {
     fn backend_timeout(&self) -> Duration;
     fn backend_url(&self) -> Uri;
-    fn keep_alive_interval(&self) -> Duration;
+    fn keepalive_interval(&self) -> Duration;
+    fn keepalive_retries(&self) -> u32;
     fn listen_address(&self) -> SocketAddr;
     fn log_backend_messages(&self) -> bool;
     fn log_client_messages(&self) -> bool;

@@ -41,7 +41,6 @@ use crate::{
         metrics::{LabelsProxyWs, Metrics},
         proxy::{
             ConnectionGuard,
-            TCP_KEEPALIVE_ATTEMPTS,
             config::ConfigTls,
             http::ProxyHttpRequestInfo,
             ws::{ProxyWsInner, config::ConfigProxyWs},
@@ -158,12 +157,12 @@ where
                 .wrap(NormalizePath::new(TrailingSlash::Trim))
                 .default_service(web::route().to(Self::receive))
         })
-        .keep_alive(config.keep_alive_interval())
+        .keep_alive(config.keepalive_interval())
         .on_connect(ConnectionGuard::on_connect(
             P::name(),
             metrics,
             client_connections_count,
-            config.keep_alive_interval(),
+            config.keepalive_interval(),
         ))
         .shutdown_signal(canceller.cancelled_owned())
         .workers(workers_count);
@@ -217,13 +216,13 @@ where
 
         // allow keep-alive packets
         let keep_alive_timeout = config.backend_timeout().mul_f64(2.0);
-        let keep_alive_interval = keep_alive_timeout.div_f64(f64::from(*TCP_KEEPALIVE_ATTEMPTS));
+        let keep_alive_interval = keep_alive_timeout.div_f64(f64::from(config.keepalive_retries()));
         socket.set_keepalive(true)?;
         socket.set_tcp_keepalive(
             &socket2::TcpKeepalive::new()
                 .with_time(keep_alive_interval)
                 .with_interval(keep_alive_interval)
-                .with_retries(*TCP_KEEPALIVE_ATTEMPTS as u32),
+                .with_retries(config.keepalive_retries()),
         )?;
 
         // must use non-blocking with tokio
@@ -333,7 +332,7 @@ where
 
         match bknd_stream.get_ref() {
             tokio_tungstenite::MaybeTlsStream::Plain(tcp_stream) => {
-                if let Err(err) = setup_keepalive(tcp_stream, this.config().keep_alive_interval()) {
+                if let Err(err) = setup_keepalive(tcp_stream, this.config().keepalive_interval()) {
                     warn!(
                         proxy = P::name(),
                         request_id = %info.req_id(),
@@ -347,7 +346,7 @@ where
 
             tokio_tungstenite::MaybeTlsStream::Rustls(tls_stream) => {
                 let (tcp_stream, _) = tls_stream.get_ref();
-                if let Err(err) = setup_keepalive(tcp_stream, this.config().keep_alive_interval()) {
+                if let Err(err) = setup_keepalive(tcp_stream, this.config().keepalive_interval()) {
                     warn!(
                         proxy = P::name(),
                         request_id = %info.req_id(),

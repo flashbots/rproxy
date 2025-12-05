@@ -1,7 +1,9 @@
 use std::{process, sync::LazyLock};
 
 use clap::Parser;
+use sysctl::Sysctl;
 use thiserror::Error;
+use x509_parser::asn1_rs::ToStatic;
 
 use crate::server::{
     config::{ConfigLogging, ConfigLoggingError, ConfigMetrics, ConfigMetricsError},
@@ -25,6 +27,72 @@ pub(crate) static PARALLELISM: LazyLock<usize> =
     LazyLock::new(|| std::thread::available_parallelism().map_or(2, std::num::NonZero::get));
 
 pub(crate) static PARALLELISM_STRING: LazyLock<String> = LazyLock::new(|| PARALLELISM.to_string());
+
+pub(crate) static TCP_KEEPALIVE_INTERVAL: LazyLock<libc::c_int> = LazyLock::new(|| {
+    #[cfg(target_os = "linux")]
+    {
+        let mut res: libc::c_int = 75;
+        if let Ok(ctl) = sysctl::Ctl::new("net.ipv4.tcp_keepalive_intvl") &&
+            let Ok(value) = ctl.value() &&
+            let Ok(value) = value.into_int()
+        {
+            res = value
+        }
+        return res;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let mut res: libc::c_int = 75000;
+        if let Ok(ctl) = sysctl::Ctl::new("net.inet.tcp.keepintvl") &&
+            let Ok(value) = ctl.value() &&
+            let Ok(value) = value.into_int()
+        {
+            res = value / 1000 // millis on macos
+        }
+
+        return res;
+    }
+
+    #[allow(unreachable_code)]
+    75
+});
+
+pub(crate) static TCP_KEEPALIVE_INTERVAL_STRING: LazyLock<String> =
+    LazyLock::new(|| format!("{}s", TCP_KEEPALIVE_INTERVAL.to_static()));
+
+pub(crate) static TCP_KEEPALIVE_PROBES: LazyLock<libc::c_int> = LazyLock::new(|| {
+    #[cfg(target_os = "linux")]
+    {
+        let mut res: libc::c_int = 9;
+        if let Ok(ctl) = sysctl::Ctl::new("net.ipv4.tcp_keepalive_probes") &&
+            let Ok(value) = ctl.value() &&
+            let Ok(value) = value.into_int()
+        {
+            res = value
+        }
+        return res;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let mut res: libc::c_int = 8;
+        if let Ok(ctl) = sysctl::Ctl::new("net.inet.tcp.keepcnt") &&
+            let Ok(value) = ctl.value() &&
+            let Ok(value) = value.into_int()
+        {
+            res = value
+        }
+
+        return res;
+    }
+
+    #[allow(unreachable_code)]
+    8
+});
+
+pub(crate) static TCP_KEEPALIVE_PROBES_STRING: LazyLock<String> =
+    LazyLock::new(|| TCP_KEEPALIVE_PROBES.to_string());
 
 // Config --------------------------------------------------------------
 

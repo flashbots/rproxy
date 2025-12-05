@@ -55,7 +55,6 @@ use crate::{
         metrics::{LabelsProxy, LabelsProxyClientInfo, LabelsProxyHttpJrpc, Metrics},
         proxy::{
             ConnectionGuard,
-            TCP_KEEPALIVE_ATTEMPTS,
             config::ConfigTls,
             http::{
                 ProxyHttpInner,
@@ -298,13 +297,13 @@ where
 
         // allow keep-alive packets
         let keep_alive_timeout = config.idle_connection_timeout().add(Duration::from_millis(1000));
-        let keep_alive_interval = keep_alive_timeout.div_f64(f64::from(*TCP_KEEPALIVE_ATTEMPTS));
+        let keep_alive_interval = keep_alive_timeout.div_f64(f64::from(config.keepalive_retries()));
         socket.set_keepalive(true)?;
         socket.set_tcp_keepalive(
             &socket2::TcpKeepalive::new()
                 .with_time(keep_alive_interval)
                 .with_interval(keep_alive_interval)
-                .with_retries(*TCP_KEEPALIVE_ATTEMPTS as u32),
+                .with_retries(config.keepalive_retries()),
         )?;
 
         // must use non-blocking with tokio

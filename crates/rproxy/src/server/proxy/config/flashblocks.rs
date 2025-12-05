@@ -4,7 +4,10 @@ use awc::http::Uri;
 use clap::Args;
 use thiserror::Error;
 
-use crate::{config::ALREADY_VALIDATED, server::proxy::ws::config::ConfigProxyWs};
+use crate::{
+    config::{ALREADY_VALIDATED, TCP_KEEPALIVE_INTERVAL_STRING, TCP_KEEPALIVE_PROBES_STRING},
+    server::proxy::ws::config::ConfigProxyWs,
+};
 
 // ConfigFlashblocks ---------------------------------------------------
 
@@ -44,7 +47,7 @@ pub(crate) struct ConfigFlashblocks {
     pub(crate) enabled: bool,
     /// interval between tcp keepalive packets on flashblocks connections
     #[arg(
-        default_value = "5s",
+        default_value = TCP_KEEPALIVE_INTERVAL_STRING.as_str(),
         env = "RPROXY_FLASHBLOCKS_KEEPALIVE_INTERVAL",
         help_heading = "flashblocks",
         long("flashblocks-keepalive-interval"),
@@ -53,6 +56,18 @@ pub(crate) struct ConfigFlashblocks {
         value_parser = humantime::parse_duration
     )]
     pub(crate) keepalive_interval: Duration,
+
+    /// maximum number of keepalive probes to send before dropping
+    /// flashblocks connection
+    #[arg(
+        default_value = TCP_KEEPALIVE_PROBES_STRING.as_str(),
+        env = "RPROXY_FLASHBLOCKS_KEEPALIVE_RETRIES",
+        help_heading = "flashblocks",
+        long("flashblocks-keepalive-retries"),
+        name("flashblocks_keepalive_retries"),
+        value_name = "count"
+    )]
+    pub(crate) keepalive_retries: u32,
 
     /// host:port for flashblocks proxy
     #[arg(
@@ -224,8 +239,13 @@ impl ConfigProxyWs for ConfigFlashblocks {
     }
 
     #[inline]
-    fn keep_alive_interval(&self) -> Duration {
+    fn keepalive_interval(&self) -> Duration {
         self.keepalive_interval
+    }
+
+    #[inline]
+    fn keepalive_retries(&self) -> u32 {
+        self.keepalive_retries
     }
 
     #[inline]
