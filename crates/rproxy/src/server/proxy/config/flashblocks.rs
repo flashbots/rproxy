@@ -4,12 +4,28 @@ use awc::http::Uri;
 use clap::Args;
 use thiserror::Error;
 
-use crate::{config::ALREADY_VALIDATED, server::proxy::ws::config::ConfigProxyWs};
+use crate::{
+    config::{ALREADY_VALIDATED, TCP_KEEPALIVE_INTERVAL_STRING, TCP_KEEPALIVE_PROBES_STRING},
+    server::proxy::ws::config::ConfigProxyWs,
+};
 
 // ConfigFlashblocks ---------------------------------------------------
 
 #[derive(Args, Clone, Debug)]
 pub(crate) struct ConfigFlashblocks {
+    /// timeout to establish backend connections of to receive pong
+    /// websocket response
+    #[arg(
+        default_value = "30s",
+        env = "RPROXY_FLASHBLOCKS_BACKEND_TIMEOUT",
+        help_heading = "flashblocks",
+        long("flashblocks-backend-timeout"),
+        name("flashblocks_backend_timeout"),
+        value_name = "duration",
+        value_parser = humantime::parse_duration
+    )]
+    pub(crate) backend_timeout: Duration,
+
     /// url of flashblocks backend
     #[arg(
         default_value = "ws://127.0.0.1:11111",
@@ -29,19 +45,29 @@ pub(crate) struct ConfigFlashblocks {
         name("flashblocks_enabled")
     )]
     pub(crate) enabled: bool,
-
-    /// timeout to establish backend connections of to receive pong
-    /// websocket response
+    /// interval between tcp keepalive packets on flashblocks connections
     #[arg(
-        default_value = "30s",
-        env = "RPROXY_FLASHBLOCKS_BACKEND_TIMEOUT",
+        default_value = TCP_KEEPALIVE_INTERVAL_STRING.as_str(),
+        env = "RPROXY_FLASHBLOCKS_KEEPALIVE_INTERVAL",
         help_heading = "flashblocks",
-        long("flashblocks-backend-timeout"),
-        name("flashblocks_backend_timeout"),
+        long("flashblocks-keepalive-interval"),
+        name("flashblocks_keepalive_interval"),
         value_name = "duration",
         value_parser = humantime::parse_duration
     )]
-    pub(crate) backend_timeout: Duration,
+    pub(crate) keepalive_interval: Duration,
+
+    /// maximum number of keepalive probes to send before dropping
+    /// flashblocks connection
+    #[arg(
+        default_value = TCP_KEEPALIVE_PROBES_STRING.as_str(),
+        env = "RPROXY_FLASHBLOCKS_KEEPALIVE_RETRIES",
+        help_heading = "flashblocks",
+        long("flashblocks-keepalive-retries"),
+        name("flashblocks_keepalive_retries"),
+        value_name = "count"
+    )]
+    pub(crate) keepalive_retries: u32,
 
     /// host:port for flashblocks proxy
     #[arg(
@@ -210,6 +236,16 @@ impl ConfigProxyWs for ConfigFlashblocks {
     #[inline]
     fn backend_url(&self) -> tungstenite::http::Uri {
         self.backend_url.parse::<tungstenite::http::Uri>().expect(ALREADY_VALIDATED)
+    }
+
+    #[inline]
+    fn keepalive_interval(&self) -> Duration {
+        self.keepalive_interval
+    }
+
+    #[inline]
+    fn keepalive_retries(&self) -> u32 {
+        self.keepalive_retries
     }
 
     #[inline]

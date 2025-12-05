@@ -51,7 +51,7 @@ impl CircuitBreaker {
 
     #[inline]
     fn timeout(config: &ConfigCircuitBreaker) -> Duration {
-        std::cmp::min(Duration::from_secs(5), config.poll_interval * 3 / 4)
+        std::cmp::min(Duration::from_millis(5000), config.poll_interval * 3 / 4)
     }
 
     #[inline]

@@ -4,13 +4,17 @@ use std::{
         Arc,
         atomic::{AtomicI64, Ordering},
     },
+    time::Duration,
 };
 
 use actix_web::dev::Extensions;
 use tracing::{debug, warn};
 use uuid::Uuid;
 
-use crate::server::metrics::{LabelsProxy, Metrics};
+use crate::{
+    server::metrics::{LabelsProxy, Metrics},
+    utils::setup_keepalive,
+};
 
 // ProxyConnectionGuard ------------------------------------------------
 
@@ -47,6 +51,7 @@ impl ConnectionGuard {
         proxy: &'static str,
         metrics: Arc<Metrics>,
         client_connections_count: Arc<AtomicI64>,
+        keep_alive_interval: Duration,
     ) -> impl Fn(&dyn Any, &mut Extensions) {
         move |connection, extensions| {
             {
@@ -64,11 +69,22 @@ impl ConnectionGuard {
                 Some(stream)
             } else {
                 warn!(
+                    proxy = proxy,
                     connection_type = std::any::type_name_of_val(connection),
                     "Unexpected connection type",
                 );
                 None
             };
+
+            if let Some(stream) = stream &&
+                let Err(err) = setup_keepalive(stream, keep_alive_interval)
+            {
+                warn!(
+                    proxy = proxy,
+                    error = ?err,
+                    "Failed to set keepalive interval",
+                );
+            }
 
             if let Some(stream) = stream {
                 let id = Uuid::now_v7();

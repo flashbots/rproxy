@@ -1,5 +1,4 @@
 pub mod config;
-
 pub(crate) mod metrics;
 pub(crate) mod proxy;
 
@@ -13,7 +12,7 @@ use tokio::{
     task::JoinHandle,
 };
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::{
     config::Config,
@@ -29,6 +28,8 @@ use crate::{
     utils::tls_certificate_validity_timestamps,
 };
 
+const MAX_OPEN_FILES: u64 = 10240;
+
 // Proxy ---------------------------------------------------------------
 
 pub struct Server {}
@@ -37,6 +38,30 @@ impl Server {
     pub async fn run(config: Config) -> Result<(), Box<dyn std::error::Error + Send>> {
         let canceller = Server::wait_for_shutdown_signal();
         let resetter = Server::wait_for_reset_signal(canceller.clone());
+
+        // try to set system limits
+        match rlimit::getrlimit(rlimit::Resource::NOFILE) {
+            Ok((mut soft, hard)) => {
+                soft = std::cmp::max(soft, MAX_OPEN_FILES);
+                soft = std::cmp::min(soft, hard);
+
+                if let Err(err) = rlimit::setrlimit(rlimit::Resource::NOFILE, soft, hard) {
+                    warn!(
+                        error = ?err,
+                        hard = hard,
+                        soft = soft,
+                        "Failed to set max open file limits",
+                    );
+                }
+            }
+
+            Err(err) => {
+                warn!(
+                    error = ?err,
+                    "Failed to read max open file limits",
+                );
+            }
+        }
 
         // spawn metrics service
         let metrics = Arc::new(Metrics::new(config.metrics.clone()));

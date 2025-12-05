@@ -341,15 +341,15 @@ impl Metrics {
         socket.set_nonblocking(true)?;
 
         // allow time to flush buffers on close
-        socket.set_linger(Some(Duration::from_secs(1)))?;
+        socket.set_linger(Some(Duration::from_millis(5000)))?;
 
         // allow binding to the socket while there are still TIME_WAIT connections
         socket.set_reuse_address(true)?;
 
         socket.set_tcp_keepalive(
             &TcpKeepalive::new()
-                .with_time(Duration::from_secs(15))
-                .with_interval(Duration::from_secs(15))
+                .with_time(Duration::from_millis(15000))
+                .with_interval(Duration::from_millis(15000))
                 .with_retries(4),
         )?;
 

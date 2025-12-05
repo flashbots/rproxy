@@ -9,7 +9,7 @@ use tracing::warn;
 use url::Url;
 
 use crate::{
-    config::ALREADY_VALIDATED,
+    config::{ALREADY_VALIDATED, TCP_KEEPALIVE_INTERVAL_STRING, TCP_KEEPALIVE_PROBES_STRING},
     server::proxy::http::config::{ConfigProxyHttp, ConfigProxyHttpMirroringStrategy},
     utils::get_all_local_ip_addresses,
 };
@@ -83,6 +83,30 @@ pub(crate) struct ConfigAuthrpc {
         value_parser = humantime::parse_duration
     )]
     pub(crate) idle_connection_timeout: Duration,
+
+    /// interval between tcp keepalive packets on authrpc connections
+    #[arg(
+        default_value = TCP_KEEPALIVE_INTERVAL_STRING.as_str(),
+        env = "RPROXY_AUTHRPC_KEEPALIVE_INTERVAL",
+        help_heading = "authrpc",
+        long("authrpc-keepalive-interval"),
+        name("authrpc_keepalive_interval"),
+        value_name = "duration",
+        value_parser = humantime::parse_duration
+    )]
+    pub(crate) keepalive_interval: Duration,
+
+    /// maximum number of keepalive probes to send before dropping authrpc
+    /// connection
+    #[arg(
+        default_value = TCP_KEEPALIVE_PROBES_STRING.as_str(),
+        env = "RPROXY_AUTHRPC_KEEPALIVE_RETRIES",
+        help_heading = "authrpc",
+        long("authrpc-keepalive-retries"),
+        name("authrpc_keepalive_retries"),
+        value_name = "count"
+    )]
+    pub(crate) keepalive_retries: u32,
 
     /// host:port for authrpc proxy
     #[arg(
@@ -351,6 +375,16 @@ impl ConfigProxyHttp for ConfigAuthrpc {
     #[inline]
     fn idle_connection_timeout(&self) -> Duration {
         self.idle_connection_timeout
+    }
+
+    #[inline]
+    fn keepalive_interval(&self) -> Duration {
+        self.keepalive_interval
+    }
+
+    #[inline]
+    fn keepalive_retries(&self) -> u32 {
+        self.keepalive_retries
     }
 
     #[inline]

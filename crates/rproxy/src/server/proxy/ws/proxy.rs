@@ -1,6 +1,7 @@
 use std::{
     io::Write,
     marker::PhantomData,
+    mem,
     str::FromStr,
     sync::{
         Arc,
@@ -30,7 +31,7 @@ use scc::HashMap;
 use time::{UtcDateTime, format_description::well_known::Iso8601};
 use tokio::{net::TcpStream, sync::broadcast};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 use x509_parser::asn1_rs::ToStatic;
 
@@ -45,7 +46,7 @@ use crate::{
             ws::{ProxyWsInner, config::ConfigProxyWs},
         },
     },
-    utils::{Loggable, raw_transaction_to_hash},
+    utils::{Loggable, raw_transaction_to_hash, setup_keepalive},
 };
 
 const WS_PING_INTERVAL_SECONDS: u64 = 1;
@@ -132,7 +133,7 @@ where
 
         let workers_count = PARALLELISM.to_static();
 
-        let shared = ProxyWsSharedState::<C, P>::new(config, &metrics);
+        let shared = ProxyWsSharedState::<C, P>::new(config.clone(), &metrics);
         let client_connections_count = shared.client_connections_count.clone();
         let worker_canceller = canceller.clone();
         let worker_resetter = resetter.clone();
@@ -156,7 +157,13 @@ where
                 .wrap(NormalizePath::new(TrailingSlash::Trim))
                 .default_service(web::route().to(Self::receive))
         })
-        .on_connect(ConnectionGuard::on_connect(P::name(), metrics, client_connections_count))
+        .keep_alive(config.keepalive_interval())
+        .on_connect(ConnectionGuard::on_connect(
+            P::name(),
+            metrics,
+            client_connections_count,
+            config.keepalive_interval(),
+        ))
         .shutdown_signal(canceller.cancelled_owned())
         .workers(workers_count);
 
@@ -207,11 +214,22 @@ where
             Some(socket2::Protocol::TCP),
         )?;
 
+        // allow keep-alive packets
+        let keep_alive_timeout = config.backend_timeout().mul_f64(2.0);
+        let keep_alive_interval = keep_alive_timeout.div_f64(f64::from(config.keepalive_retries()));
+        socket.set_keepalive(true)?;
+        socket.set_tcp_keepalive(
+            &socket2::TcpKeepalive::new()
+                .with_time(keep_alive_interval)
+                .with_interval(keep_alive_interval)
+                .with_retries(config.keepalive_retries()),
+        )?;
+
         // must use non-blocking with tokio
         socket.set_nonblocking(true)?;
 
         // allow time to flush buffers on close
-        socket.set_linger(Some(config.backend_timeout()))?;
+        socket.set_linger(Some(Duration::from_millis(5000)))?;
 
         // allow binding to the socket while there are still TIME_WAIT connections
         socket.set_reuse_address(true)?;
@@ -258,7 +276,7 @@ where
         info: ProxyHttpRequestInfo,
     ) {
         let bknd_uri = this.backend.new_backend_uri(&info);
-        trace!(
+        debug!(
             proxy = P::name(),
             request_id = %info.req_id(),
             connection_id = %info.conn_id(),
@@ -312,6 +330,37 @@ where
             }
         };
 
+        match bknd_stream.get_ref() {
+            tokio_tungstenite::MaybeTlsStream::Plain(tcp_stream) => {
+                if let Err(err) = setup_keepalive(tcp_stream, this.config().keepalive_interval()) {
+                    warn!(
+                        proxy = P::name(),
+                        request_id = %info.req_id(),
+                        connection_id = %info.conn_id(),
+                        worker_id = %this.id,
+                        error = ?err,
+                        "Failed to set keepalive interval"
+                    );
+                }
+            }
+
+            tokio_tungstenite::MaybeTlsStream::Rustls(tls_stream) => {
+                let (tcp_stream, _) = tls_stream.get_ref();
+                if let Err(err) = setup_keepalive(tcp_stream, this.config().keepalive_interval()) {
+                    warn!(
+                        proxy = P::name(),
+                        request_id = %info.req_id(),
+                        connection_id = %info.conn_id(),
+                        worker_id = %this.id,
+                        error = ?err,
+                        "Failed to set keepalive interval"
+                    );
+                }
+            }
+
+            &_ => {} // there's nothing else
+        }
+
         let (bknd_tx, bknd_rx) = bknd_stream.split();
 
         let mut pump = ProxyWsPump {
@@ -323,8 +372,8 @@ where
             resetter: this.resetter.clone(),
             clnt_tx,
             clnt_rx,
-            bknd_tx,
-            bknd_rx,
+            bknd_tx: Some(bknd_tx),
+            bknd_rx: Some(bknd_rx),
             pings: HashMap::new(),
             ping_balance_bknd: AtomicI64::new(0),
             ping_balance_clnt: AtomicI64::new(0),
@@ -613,8 +662,8 @@ where
 
     clnt_tx: Session,
     clnt_rx: MessageStream,
-    bknd_tx: SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, tungstenite::Message>,
-    bknd_rx: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
+    bknd_tx: Option<SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, tungstenite::Message>>,
+    bknd_rx: Option<SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>>,
 
     pings: HashMap<Uuid, ProxyWsPing>,
     ping_balance_clnt: AtomicI64,
@@ -637,13 +686,34 @@ where
             "Starting websocket pump..."
         );
 
-        let mut heartbeat = tokio::time::interval(Duration::from_secs(WS_PING_INTERVAL_SECONDS));
+        let mut heartbeat =
+            tokio::time::interval(Duration::from_millis(WS_PING_INTERVAL_SECONDS * 1000));
 
         let mut pumping: Result<(), &str> = Ok(());
 
         let mut resetter = self.resetter.subscribe();
 
         while pumping.is_ok() && !self.canceller.is_cancelled() && !resetter.is_closed() {
+            #[cfg(feature = "chaos")]
+            if self.chaos.stream_is_blocked.load(Ordering::Relaxed) {
+                tokio::select! {
+                    _ = self.canceller.cancelled() => {
+                        break;
+                    }
+
+                    _ = resetter.recv() => {
+                        break;
+                    }
+
+                    // client => backend
+                    clnt_msg = self.clnt_rx.next() => {
+                        pumping = self.pump_clnt_to_bknd(UtcDateTime::now(), clnt_msg).await;
+                    }
+                }
+
+                continue;
+            }
+
             tokio::select! {
                 _ = self.canceller.cancelled() => {
                     break;
@@ -664,7 +734,12 @@ where
                 }
 
                 // backend => client
-                bknd_msg = self.bknd_rx.next() => {
+                bknd_msg = async {
+                    match &mut self.bknd_rx {
+                        Some(bknd_rx) => bknd_rx.next().await,
+                        None => None,
+                    }
+                } => {
                     pumping = self.pump_bknd_to_cli(UtcDateTime::now(), bknd_msg).await;
                 }
             }
@@ -758,8 +833,9 @@ where
             }
 
             let bknd_ping = ProxyWsPing::new(self.info.conn_id());
-            if let Err(err) =
-                self.bknd_tx.send(tungstenite::Message::Ping(bknd_ping.to_bytes())).await
+            if let Some(bknd_tx) = &mut self.bknd_tx &&
+                let Err(err) =
+                    bknd_tx.send(tungstenite::Message::Ping(bknd_ping.to_bytes())).await
             {
                 error!(
                     proxy = P::name(),
@@ -785,13 +861,19 @@ where
         if !self.chaos.stream_is_blocked.load(Ordering::Relaxed) &&
             rand::random::<f64>() < self.shared.config().chaos_probability_stream_blocked()
         {
-            debug!(
+            warn!(
                 proxy = P::name(),
                 connection_id = %self.info.conn_id(),
                 worker_id = %self.worker_id,
                 "Blocking the stream (chaos)"
             );
             self.chaos.stream_is_blocked.store(true, Ordering::Relaxed);
+            _ = self
+                .close_bknd_session(tungstenite::protocol::CloseFrame {
+                    code: tungstenite::protocol::frame::coding::CloseCode::Normal,
+                    reason: WS_CLOSE_REASON_NORMAL.into(),
+                })
+                .await;
         }
 
         match clnt_msg {
@@ -804,8 +886,9 @@ where
                             return Ok(());
                         }
 
-                        if let Err(err) =
-                            self.bknd_tx.send(tungstenite::Message::Binary(bytes.clone())).await
+                        if let Some(bknd_tx) = &mut self.bknd_tx &&
+                            let Err(err) =
+                                bknd_tx.send(tungstenite::Message::Binary(bytes.clone())).await
                         {
                             error!(
                                 proxy = P::name(),
@@ -840,15 +923,15 @@ where
                             return Ok(());
                         }
 
-                        if let Err(err) = self
-                            .bknd_tx
-                            .send(tungstenite::Message::Text(unsafe {
-                                // safety: it's from client's ws message => must be valid utf-8
-                                tungstenite::protocol::frame::Utf8Bytes::from_bytes_unchecked(
-                                    text.clone().into_bytes(),
-                                )
-                            }))
-                            .await
+                        if let Some(bknd_tx) = &mut self.bknd_tx &&
+                            let Err(err) = bknd_tx
+                                .send(tungstenite::Message::Text(unsafe {
+                                    // safety: it's from client's ws message => must be valid utf-8
+                                    tungstenite::protocol::frame::Utf8Bytes::from_bytes_unchecked(
+                                        text.clone().into_bytes(),
+                                    )
+                                }))
+                                .await
                         {
                             error!(
                                 proxy = P::name(),
@@ -878,6 +961,11 @@ where
 
                     // ping msg from client
                     actix_ws::Message::Ping(bytes) => {
+                        #[cfg(feature = "chaos")]
+                        if self.chaos.stream_is_blocked.load(Ordering::Relaxed) {
+                            return Ok(());
+                        }
+
                         #[cfg(debug_assertions)]
                         debug!(
                             proxy = P::name(),
@@ -885,11 +973,6 @@ where
                             worker_id = %self.worker_id,
                             "Handling client's ping..."
                         );
-
-                        #[cfg(feature = "chaos")]
-                        if self.chaos.stream_is_blocked.load(Ordering::Relaxed) {
-                            return Ok(());
-                        }
 
                         #[cfg(feature = "chaos")]
                         if rand::random::<f64>() <
@@ -924,7 +1007,7 @@ where
                             proxy = P::name(),
                             connection_id = %self.info.conn_id(),
                             worker_id = %self.worker_id,
-                            "Received pong form client"
+                            "Received pong from client"
                         );
 
                         if let Some(pong) = ProxyWsPing::from_bytes(bytes) &&
@@ -1012,13 +1095,19 @@ where
         if !self.chaos.stream_is_blocked.load(Ordering::Relaxed) &&
             rand::random::<f64>() < self.shared.config().chaos_probability_stream_blocked()
         {
-            debug!(
+            warn!(
                 proxy = P::name(),
                 connection_id = %self.info.conn_id(),
                 worker_id = %self.worker_id,
                 "Blocking the stream (chaos)"
             );
             self.chaos.stream_is_blocked.store(true, Ordering::Relaxed);
+            _ = self
+                .close_bknd_session(tungstenite::protocol::CloseFrame {
+                    code: tungstenite::protocol::frame::coding::CloseCode::Normal,
+                    reason: WS_CLOSE_REASON_NORMAL.into(),
+                })
+                .await;
         }
 
         match bknd_msg {
@@ -1094,6 +1183,11 @@ where
 
                     // ping
                     tungstenite::Message::Ping(bytes) => {
+                        #[cfg(feature = "chaos")]
+                        if self.chaos.stream_is_blocked.load(Ordering::Relaxed) {
+                            return Ok(());
+                        }
+
                         #[cfg(debug_assertions)]
                         debug!(
                             proxy = P::name(),
@@ -1101,11 +1195,6 @@ where
                             worker_id = %self.worker_id,
                             "Handling backend's ping..."
                         );
-
-                        #[cfg(feature = "chaos")]
-                        if self.chaos.stream_is_blocked.load(Ordering::Relaxed) {
-                            return Ok(());
-                        }
 
                         #[cfg(feature = "chaos")]
                         if rand::random::<f64>() <
@@ -1120,7 +1209,8 @@ where
                             return Ok(());
                         }
 
-                        if let Err(err) = self.bknd_tx.send(tungstenite::Message::Pong(bytes)).await
+                        if let Some(bknd_tx) = &mut self.bknd_tx &&
+                            let Err(err) = bknd_tx.send(tungstenite::Message::Pong(bytes)).await
                         {
                             error!(
                                 proxy = P::name(),
@@ -1141,7 +1231,7 @@ where
                             proxy = P::name(),
                             connection_id = %self.info.conn_id(),
                             worker_id = %self.worker_id,
-                            "Received pong form backend"
+                            "Received pong from backend"
                         );
 
                         if let Some(pong) = ProxyWsPing::from_bytes(bytes) &&
@@ -1238,34 +1328,50 @@ where
         &mut self,
         frame: tungstenite::protocol::CloseFrame,
     ) -> Result<(), &'static str> {
-        debug!(
-            proxy = P::name(),
-            connection_id = %self.info.conn_id(),
-            worker_id = %self.worker_id,
-            msg = %frame.reason,
-            "Closing backend websocket session..."
-        );
+        if let Some(mut bknd_tx) = mem::take(&mut self.bknd_tx) {
+            debug!(
+                proxy = P::name(),
+                connection_id = %self.info.conn_id(),
+                worker_id = %self.worker_id,
+                msg = %frame.reason,
+                "Closing backend websocket session..."
+            );
 
-        if let Err(err) = self
-            .bknd_tx
-            .send(tungstenite::Message::Close(Some(
-                frame.clone(), // it's cheap to clone
-            )))
-            .await
-        {
-            if let tungstenite::error::Error::Protocol(protocol_err) = err {
-                if protocol_err == tungstenite::error::ProtocolError::SendAfterClosing {
+            if let Err(err) = bknd_tx
+                .send(tungstenite::Message::Close(Some(
+                    frame.clone(), // it's cheap to clone
+                )))
+                .await
+            {
+                if let tungstenite::error::Error::AlreadyClosed = err {
                     return Ok(());
                 }
-                error!(
-                    proxy = P::name(),
-                    connection_id = %self.info.conn_id(),
-                    worker_id = %self.worker_id,
-                    msg = %frame.reason,
-                    error = ?protocol_err,
-                    "Failed to close backend websocket session"
-                );
-            } else {
+                if let tungstenite::error::Error::Protocol(protocol_err) = err {
+                    if protocol_err == tungstenite::error::ProtocolError::SendAfterClosing {
+                        return Ok(());
+                    }
+                    error!(
+                        proxy = P::name(),
+                        connection_id = %self.info.conn_id(),
+                        worker_id = %self.worker_id,
+                        msg = %frame.reason,
+                        error = ?protocol_err,
+                        "Failed to close backend websocket session"
+                    );
+                } else {
+                    error!(
+                        proxy = P::name(),
+                        connection_id = %self.info.conn_id(),
+                        worker_id = %self.worker_id,
+                        msg = %frame.reason,
+                        error = ?err,
+                        "Failed to close backend websocket session"
+                    );
+                }
+                return Err(WS_BKND_ERROR);
+            }
+
+            if let Err(err) = bknd_tx.close().await {
                 error!(
                     proxy = P::name(),
                     connection_id = %self.info.conn_id(),
@@ -1275,10 +1381,27 @@ where
                     "Failed to close backend websocket session"
                 );
             }
-            return Err(WS_BKND_ERROR);
         }
 
+        drop(mem::take(&mut self.bknd_rx));
+
         Ok(())
+    }
+}
+
+#[cfg(debug_assertions)]
+impl<C, P> Drop for ProxyWsPump<C, P>
+where
+    C: ConfigProxyWs,
+    P: ProxyWsInner<C>,
+{
+    fn drop(&mut self) {
+        debug!(
+            proxy = P::name(),
+            connection_id = %self.info.conn_id(),
+            worker_id = %self.worker_id,
+            "Dropping websocket pump"
+        );
     }
 }
 
@@ -1393,7 +1516,7 @@ impl ProxyWsPing {
         let id = Uuid::from_u128(bytes.get_u128());
         let conn_id = Uuid::from_u128(bytes.get_u128());
         let Ok(timestamp) = UtcDateTime::from_unix_timestamp_nanos(bytes.get_i128()) else {
-            return None
+            return None;
         };
 
         Some(Self { id, conn_id, timestamp })
