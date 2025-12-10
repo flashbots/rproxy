@@ -1517,7 +1517,7 @@ impl ProxyHttpRequestInfo {
 
         Self {
             req_id: Uuid::now_v7(),
-            conn_id: Uuid::now_v7(),
+            conn_id: guard.map_or(Uuid::nil(), |guard| guard.id),
             remote_addr,
             method: req.method().clone(),
             path,
