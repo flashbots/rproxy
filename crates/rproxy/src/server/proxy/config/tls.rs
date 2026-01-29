@@ -43,6 +43,7 @@ pub(crate) struct ConfigTls {
     )]
     pub(crate) key: String,
 
+    /// Whether to enable remote-attested TLS
     #[arg(long)]
     pub(crate) enable_attested_tls: bool,
 }
