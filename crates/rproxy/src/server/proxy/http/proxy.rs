@@ -4,6 +4,7 @@ use std::{
     marker::PhantomData,
     mem,
     pin::Pin,
+    rc::Rc,
     str::FromStr,
     sync::{
         Arc,
@@ -242,7 +243,7 @@ where
                     })
                     .h1(actix_service::map_config(app, |_| AppConfig::default()));
 
-                let http_factory = Arc::new(actix_service::boxed::factory(h1));
+                let http_factory = Rc::new(actix_service::boxed::factory(h1));
 
                 let attested_tls_server = attested_tls_server.clone();
                 actix_service::fn_service(move |stream: tokio::net::TcpStream| {
