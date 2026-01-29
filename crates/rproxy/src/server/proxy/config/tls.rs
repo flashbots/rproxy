@@ -42,6 +42,10 @@ pub(crate) struct ConfigTls {
         value_name = "path"
     )]
     pub(crate) key: String,
+
+    /// Whether to enable remote-attested TLS
+    #[arg(long)]
+    pub(crate) enable_attested_tls: bool,
 }
 
 impl ConfigTls {

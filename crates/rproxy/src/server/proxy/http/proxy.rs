@@ -4,6 +4,7 @@ use std::{
     marker::PhantomData,
     mem,
     pin::Pin,
+    rc::Rc,
     str::FromStr,
     sync::{
         Arc,
@@ -13,6 +14,7 @@ use std::{
 };
 
 use actix::{Actor, AsyncContext, WrapFuture};
+use actix_service::ServiceFactory;
 use actix_web::{
     self,
     App,
@@ -24,6 +26,11 @@ use actix_web::{
     http::{StatusCode, header},
     middleware::{NormalizePath, TrailingSlash},
     web,
+};
+use attested_tls_proxy::{
+    AttestationGenerator,
+    attestation::AttestationVerifier,
+    attested_tls::{AttestedTlsServer, TlsCertAndKey},
 };
 use awc::{
     Client,
@@ -192,7 +199,72 @@ where
             .shutdown_signal(canceller.cancelled_owned())
             .workers(workers_count);
 
-        let server = if tls.enabled() {
+        // Setup attested TLS if enabled
+        let attested_tls_server = if tls.enable_attested_tls {
+            let cert_and_key = TlsCertAndKey {
+                cert_chain: tls.certificate().to_vec(),
+                key: tls.key().clone_key(),
+            };
+
+            Some(
+                AttestedTlsServer::new(
+                    cert_and_key,
+                    AttestationGenerator::with_no_attestation(),
+                    AttestationVerifier::expect_none(),
+                    false,
+                )
+                .await
+                .unwrap(),
+            )
+        } else {
+            None
+        };
+
+        let server = if let Some(attested_tls_server) = attested_tls_server {
+            server.listen(P::name(), listener, move || {
+                let this =
+                    web::Data::new(Self::new(shared.clone(), max_concurrent_requests_per_worker));
+
+                let app = App::new()
+                    .app_data(this)
+                    .wrap(NormalizePath::new(TrailingSlash::Trim))
+                    .default_service(web::route().to(Self::receive));
+
+                let on_connect = ConnectionGuard::on_connect(
+                    P::name(),
+                    metrics.clone(),
+                    client_connections_count.clone(),
+                );
+
+                let h1 = actix_http::HttpService::build()
+                    .keep_alive(keep_alive)
+                    .on_connect_ext(move |io: &_, ext: _| {
+                        (on_connect)(io as &dyn std::any::Any, ext)
+                    })
+                    .h1(actix_service::map_config(app, |_| AppConfig::default()));
+
+                let http_factory = Rc::new(actix_service::boxed::factory(h1));
+
+                let attested_tls_server = attested_tls_server.clone();
+                actix_service::fn_service(move |stream: tokio::net::TcpStream| {
+                    let http_factory = http_factory.clone();
+                    let attested_tls_server = attested_tls_server.clone();
+
+                    async move {
+                        let peer_addr = stream.peer_addr().ok();
+
+                        // This internally does TLS handshake and attestation exchange
+                        let (attested_connection, _accepted_measurements, _attestation_type) =
+                            attested_tls_server.handle_connection(stream).await.unwrap();
+
+                        let conn_svc = http_factory.new_service(()).await.unwrap();
+                        conn_svc.call((attested_connection, peer_addr)).await.unwrap();
+
+                        Ok::<_, std::io::Error>(())
+                    }
+                })
+            })
+        } else if tls.enabled() {
             server.listen(P::name(), listener, move || {
                 let this =
                     web::Data::new(Self::new(shared.clone(), max_concurrent_requests_per_worker));
