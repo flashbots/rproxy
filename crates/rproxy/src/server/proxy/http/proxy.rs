@@ -198,6 +198,7 @@ where
             .shutdown_signal(canceller.cancelled_owned())
             .workers(workers_count);
 
+        // Setup attested TLS if enabled
         let attested_tls_server = if tls.enable_attested_tls {
             let cert_and_key = TlsCertAndKey {
                 cert_chain: tls.certificate().to_vec(),
@@ -251,6 +252,7 @@ where
                     async move {
                         let peer_addr = stream.peer_addr().ok();
 
+                        // This internally does TLS handshake and attestation exchange
                         let (attested_connection, _accepted_measurements, _attestation_type) =
                             attested_tls_server.handle_connection(stream).await.unwrap();
 
