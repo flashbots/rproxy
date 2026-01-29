@@ -41,15 +41,13 @@ impl Server {
 
         // try to set system limits
         match rlimit::getrlimit(rlimit::Resource::NOFILE) {
-            Ok((mut soft, hard)) => {
-                soft = std::cmp::max(soft, MAX_OPEN_FILES);
-                soft = std::cmp::min(soft, hard);
-
-                if let Err(err) = rlimit::setrlimit(rlimit::Resource::NOFILE, soft, hard) {
+            Ok((_, hard)) => {
+                // raise soft limit to the max
+                if let Err(err) = rlimit::setrlimit(rlimit::Resource::NOFILE, hard, hard) {
                     warn!(
                         error = ?err,
                         hard = hard,
-                        soft = soft,
+                        soft = hard,
                         "Failed to set max open file limits",
                     );
                 }

@@ -55,7 +55,7 @@ pub(crate) static TCP_KEEPALIVE_INTERVAL: LazyLock<libc::c_int> = LazyLock::new(
     }
 
     #[allow(unreachable_code)]
-    75
+    75 // default value for unexpected `target_os`
 });
 
 pub(crate) static TCP_KEEPALIVE_INTERVAL_STRING: LazyLock<String> =
@@ -88,7 +88,7 @@ pub(crate) static TCP_KEEPALIVE_PROBES: LazyLock<libc::c_int> = LazyLock::new(||
     }
 
     #[allow(unreachable_code)]
-    8
+    8 // default value for unexpected `target_os`
 });
 
 pub(crate) static TCP_KEEPALIVE_PROBES_STRING: LazyLock<String> =
