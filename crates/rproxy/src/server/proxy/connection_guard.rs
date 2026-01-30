@@ -62,6 +62,9 @@ impl ConnectionGuard {
                 Some(stream)
             } else if let Some(stream) = connection.downcast_ref::<actix_web::rt::net::TcpStream>() {
                 Some(stream)
+            } else if let Some(tls) = connection.downcast_ref::<tokio_rustls::server::TlsStream<actix_web::rt::net::TcpStream>>() {
+                let (stream, _session) = tls.get_ref();
+                Some(stream)
             } else {
                 warn!(
                     connection_type = std::any::type_name_of_val(connection),
