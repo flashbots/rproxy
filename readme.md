@@ -84,6 +84,12 @@ authrpc:
           [env: RPROXY_AUTHRPC_IDLE_CONNECTION_TIMEOUT=]
           [default: 30s]
 
+      --authrpc-keepalive-interval <duration>
+          interval between tcp keepalive packets on authrpc connections
+
+          [env: RPROXY_AUTHRPC_KEEPALIVE_INTERVAL=]
+          [default: 5s]
+
       --authrpc-listen-address <socket>
           host:port for authrpc proxy
 
@@ -191,6 +197,12 @@ circuit-breaker:
           [default: ]
 
 flashblocks:
+      --flashblocks-backend-timeout <duration>
+          timeout to establish backend connections of to receive pong websocket response
+
+          [env: RPROXY_FLASHBLOCKS_BACKEND_TIMEOUT=]
+          [default: 30s]
+
       --flashblocks-backend <url>
           url of flashblocks backend
 
@@ -202,11 +214,11 @@ flashblocks:
 
           [env: RPROXY_FLASHBLOCKS_ENABLED=]
 
-      --flashblocks-backend-timeout <duration>
-          timeout to establish backend connections of to receive pong websocket response
+      --flashblocks-keepalive-interval <duration>
+          interval between tcp keepalive packets on flashblocks connections
 
-          [env: RPROXY_FLASHBLOCKS_BACKEND_TIMEOUT=]
-          [default: 30s]
+          [env: RPROXY_FLASHBLOCKS_KEEPALIVE_INTERVAL=]
+          [default: 5s]
 
       --flashblocks-listen-address <socket>
           host:port for flashblocks proxy
@@ -279,6 +291,12 @@ rpc:
 
           [env: RPROXY_RPC_IDLE_CONNECTION_TIMEOUT=]
           [default: 30s]
+
+      --rpc-keepalive-interval <duration>
+          interval between tcp keepalive packets on rpc connections
+
+          [env: RPROXY_RPC_KEEPALIVE_INTERVAL=]
+          [default: 5s]
 
       --rpc-listen-address <socket>
           host:port for rpc proxy

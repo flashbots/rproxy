@@ -1,9 +1,15 @@
+use std::{net::SocketAddr, time::Duration};
+
+use tungstenite::http::Uri;
+
 // ConfigProxyWs -------------------------------------------------------
 
 pub(crate) trait ConfigProxyWs: Clone + Send + Unpin + 'static {
-    fn backend_timeout(&self) -> std::time::Duration;
-    fn backend_url(&self) -> tungstenite::http::Uri;
-    fn listen_address(&self) -> std::net::SocketAddr;
+    fn backend_timeout(&self) -> Duration;
+    fn backend_url(&self) -> Uri;
+    fn keepalive_interval(&self) -> Duration;
+    fn keepalive_retries(&self) -> u32;
+    fn listen_address(&self) -> SocketAddr;
     fn log_backend_messages(&self) -> bool;
     fn log_client_messages(&self) -> bool;
     fn log_sanitise(&self) -> bool;
