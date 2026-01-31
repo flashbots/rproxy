@@ -27,7 +27,7 @@ actix-ws = "0.3.0"
 alloy-json-rpc = "1.0.41"
 alloy-primitives = "1.3.1"
 alloy-rlp = "0.3.12"
-attested-tls-proxy = { git = "https://github.com/flashbots/attested-tls-proxy.git", default-features = false }
+attested-tls-proxy = { git = "https://github.com/flashbots/attested-tls-proxy.git", branch="peg/rpc-client", default-features = false, features=["rpc"] }
 awc = "3.7.0"
 base64 = "0.22.1"
 brotli = "8.0.2"
@@ -69,3 +69,9 @@ uuid = { version = "1.18.1", features = ["v7" ]}
 valuable = { version = "0.1.1", features = ["derive"] }
 x509-parser = "0.18.0"
 zstd = "0.13.3"
+
+[dev-dependencies]
+jsonrpsee = { version = "0.26.0", features = ["server"] }
+pem-rfc7468 = { version = "1.0.0", features = ["std"] }
+rcgen = "0.14.7"
+tempfile = "3.24.0"
