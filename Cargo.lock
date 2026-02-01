@@ -941,8 +941,8 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "attested-tls-proxy"
-version = "0.0.1"
-source = "git+https://github.com/flashbots/attested-tls-proxy.git?branch=peg%2Frpc-client#bb8977c1fa525b1431957c4bf0c773ddcf7dfdba"
+version = "0.0.2"
+source = "git+https://github.com/flashbots/attested-tls-proxy.git#da4f067f7022a965a7f335bdf2a0e7e207c1757f"
 dependencies = [
  "alloy-rpc-client",
  "alloy-transport-http",
@@ -962,10 +962,14 @@ dependencies = [
  "num-bigint",
  "once_cell",
  "openssl",
+ "p256",
  "parity-scale-codec",
  "pem-rfc7468 0.7.0",
+ "pkcs1",
+ "pkcs8",
  "rand_core 0.6.4",
  "reqwest",
+ "rsa",
  "rustls-pemfile",
  "rustls-webpki",
  "serde",
@@ -1943,6 +1947,7 @@ dependencies = [
  "ff",
  "generic-array",
  "group",
+ "pem-rfc7468 0.7.0",
  "pkcs8",
  "rand_core 0.6.4",
  "sec1",
