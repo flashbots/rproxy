@@ -1,0 +1,30 @@
+[package]
+name = "atls"
+version = "0.0.1"
+edition = "2024"
+
+[dependencies]
+actix-rt.workspace = true
+actix-service.workspace = true
+actix-tls.workspace = true
+actix-utils.workspace = true
+arc-swap = "1.8.0"
+awc.workspace = true
+http.workspace = true
+futures-core = "0.3.31"
+impl-more = "0.3.1"
+parking_lot = "0.12.5"
+pin-project = "1.1.10"
+pin-project-lite = "0.2.16"
+rcgen.workspace = true
+rustls-pemfile.workspace = true
+rustls.workspace = true
+scc = "3.5.5"
+thiserror = "2.0.18"
+time = "0.3.46"
+tokio-rustls.workspace = true
+tokio.workspace = true
+tracing = "0.1.44"
+futures-util = "0.3.31"
+rustls-pki-types = "1.14.0"
+actix-http.workspace = true

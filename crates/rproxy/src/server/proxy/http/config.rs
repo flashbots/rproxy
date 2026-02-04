@@ -5,6 +5,7 @@ use url::Url;
 // ConfigProxyHttp -----------------------------------------------------
 
 pub(crate) trait ConfigProxyHttp: Clone + Send + Unpin + 'static {
+    fn atls_enabled(&self) -> bool;
     fn backend_max_concurrent_requests(&self) -> usize;
     fn backend_timeout(&self) -> Duration;
     fn backend_url(&self) -> Url;

@@ -1,4 +1,8 @@
-use std::{net::IpAddr, os::fd::AsFd, time::Duration};
+use std::{
+    net::{IpAddr, Ipv4Addr, Ipv6Addr},
+    os::fd::AsFd,
+    time::Duration,
+};
 
 use pnet::datalink::{self};
 
@@ -15,6 +19,30 @@ pub(crate) fn get_all_local_ip_addresses() -> Vec<IpAddr> {
 
     ips
 }
+
+// ip_to_string --------------------------------------------------------
+
+pub(crate) fn ip_to_string(ip: &&[u8]) -> String {
+    match ip.len() {
+        4 => {
+            let ip: [u8; 4] = (*ip).try_into().unwrap();
+            let ip = Ipv4Addr::from(ip);
+            ip.to_string()
+        }
+
+        16 => {
+            let ip: [u8; 16] = (*ip).try_into().unwrap();
+            let ip = Ipv6Addr::from(ip);
+            ip.to_string()
+        }
+
+        _ => {
+            panic!("unexpected IP address length {}", ip.len());
+        }
+    }
+}
+
+// setup_keepalive -----------------------------------------------------
 
 pub(crate) fn setup_keepalive(
     stream: &tokio::net::TcpStream,

@@ -15,6 +15,7 @@ use std::{
 };
 
 use actix::{Actor, AsyncContext, WrapFuture};
+use actix_service::ServiceFactoryExt;
 use actix_web::{
     self,
     App,
@@ -26,6 +27,10 @@ use actix_web::{
     http::{StatusCode, header},
     middleware::{NormalizePath, TrailingSlash},
     web,
+};
+use atls::{
+    client::ActixNestingTlsConnectorService,
+    server::{ActixNestingTlsAcceptor, ActixNestingTlsStream, AtlsServerConfig},
 };
 use awc::{
     Client,
@@ -62,7 +67,13 @@ use crate::{
             },
         },
     },
-    utils::{Loggable, decompress, is_hop_by_hop_header, raw_transaction_to_hash},
+    utils::{
+        Loggable,
+        decompress,
+        is_hop_by_hop_header,
+        raw_transaction_to_hash,
+        tls_certificate_subject_names,
+    },
 };
 
 // ProxyHttp -----------------------------------------------------------
@@ -190,7 +201,9 @@ where
             .shutdown_signal(canceller.cancelled_owned())
             .workers(workers_count);
 
-        let server = if tls.enabled() {
+        let server = if !tls.tls_enabled() {
+            // plain http
+
             server.listen(P::name(), listener, move || {
                 let config = shared.config();
 
@@ -217,15 +230,49 @@ where
                     })
                     .h1(actix_service::map_config(app, |_| AppConfig::default()));
 
-                let cert = tls.certificate().clone();
-                let key = tls.key().clone_key();
+                h1.tcp()
+            })
+        } else if !tls.atls_enabled() {
+            // tls
+
+            server.listen(P::name(), listener, move || {
+                let config = shared.config();
+
+                let this =
+                    web::Data::new(Self::new(shared.clone(), max_concurrent_requests_per_worker));
+
+                let app = App::new()
+                    .app_data(this)
+                    .wrap(NormalizePath::new(TrailingSlash::Trim))
+                    .default_service(web::route().to(Self::receive));
+
+                let on_connect = ConnectionGuard::on_connect(
+                    P::name(),
+                    metrics.clone(),
+                    client_connections_count.clone(),
+                    config.keepalive_interval(),
+                );
+
+                let h1 = actix_http::HttpService::build()
+                    .client_disconnect_timeout(Duration::from_millis(1000)) // same as in HttpServer
+                    .keep_alive(config.keepalive_interval())
+                    .on_connect_ext(move |io: &_, ext: _| {
+                        (on_connect)(io as &dyn std::any::Any, ext)
+                    })
+                    .h1(actix_service::map_config(app, |_| AppConfig::default()));
+
+                let cert = tls.tls_certificate().clone();
+                let key = tls.tls_key().clone_key();
                 let tls_config = rustls::ServerConfig::builder()
                     .with_no_client_auth()
                     .with_single_cert(cert, key)
                     .unwrap(); // safety: verified on start
+
                 h1.rustls_0_23(tls_config)
             })
         } else {
+            // atls
+
             server.listen(P::name(), listener, move || {
                 let config = shared.config();
 
@@ -251,7 +298,29 @@ where
                         (on_connect)(io as &dyn std::any::Any, ext)
                     })
                     .h1(actix_service::map_config(app, |_| AppConfig::default()));
-                h1.tcp()
+
+                let cert = tls.tls_certificate().clone();
+                let key = tls.tls_key().clone_key();
+
+                let atls_config =
+                    AtlsServerConfig::new(tls.atls_key(), tls_certificate_subject_names(&cert));
+
+                let tls_config = rustls::ServerConfig::builder()
+                    .with_no_client_auth()
+                    .with_single_cert(cert, key)
+                    .unwrap(); // safety: verified on start
+
+                ActixNestingTlsAcceptor::new(tls_config, atls_config.get())
+                    // .set_handshake_timeout(Duration::from_millis(5000)) // TODO: figure this out
+                    .map_init_err(|_| {
+                        unreachable!("TLS acceptor service factory does not error on init")
+                    })
+                    .map_err(actix_tls::accept::TlsError::into_service_error)
+                    .map(|io: ActixNestingTlsStream<tokio::net::TcpStream>| {
+                        let peer_addr = io.get_ref().0.get_ref().0.peer_addr().ok();
+                        (io, peer_addr)
+                    })
+                    .and_then(h1.map_err(actix_tls::accept::TlsError::Service))
             })
         };
 
@@ -1320,11 +1389,31 @@ where
             .unwrap() // safety: verified on start
             .to_string();
 
-        let client = Client::builder()
-            .add_default_header((header::HOST, host))
-            .connector(Connector::new().conn_keep_alive(2 * timeout).limit(connections_limit))
-            .timeout(timeout)
-            .finish();
+        let client = Client::builder().add_default_header((header::HOST, host)).timeout(timeout);
+        let connector = Connector::new().conn_keep_alive(2 * timeout);
+
+        let client = if inner.config().atls_enabled() {
+            let outer = Arc::new(
+                rustls::ClientConfig::builder()
+                    .with_root_certificates(rustls::RootCertStore::empty())
+                    .with_no_client_auth(),
+            );
+
+            let inner = Arc::new(
+                rustls::ClientConfig::builder()
+                    .dangerous()
+                    .with_custom_certificate_verifier(Arc::new(
+                        atls::debug::AcceptAnyIssuerVerifier,
+                    ))
+                    .with_no_client_auth(),
+            );
+
+            client
+                .connector(connector.connector(ActixNestingTlsConnectorService::new(outer, inner)))
+                .finish()
+        } else {
+            client.connector(connector).finish()
+        };
 
         Self { inner, worker_id, metrics, client, url, _config: PhantomData }
     }

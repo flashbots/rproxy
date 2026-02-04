@@ -179,7 +179,7 @@ impl Config {
         }
 
         // tls
-        if (!self.tls.certificate.is_empty() || !self.tls.key.is_empty()) &&
+        if (!self.tls.tls_certificate.is_empty() || !self.tls.tls_key.is_empty()) &&
             let Some(_errs) = self.tls.validate()
         {
             errs.append(&mut _errs.into_iter().map(|err| err.into()).collect());

@@ -18,6 +18,15 @@ use crate::{
 
 #[derive(Args, Clone, Debug)]
 pub(crate) struct ConfigAuthrpc {
+    /// enable atls for authrpc proxy
+    #[arg(
+        env = "RPROXY_AUTHRPC_ATLS_ENABLED",
+        help_heading = "authrpc",
+        long("authrpc-atls-enabled"),
+        name("authrpc_atls_enabled")
+    )]
+    pub(crate) atls_enabled: bool,
+
     /// url of authrpc backend
     #[arg(
         default_value = "http://127.0.0.1:18651",
@@ -357,6 +366,11 @@ impl ConfigAuthrpc {
 }
 
 impl ConfigProxyHttp for ConfigAuthrpc {
+    #[inline]
+    fn atls_enabled(&self) -> bool {
+        self.atls_enabled
+    }
+
     #[inline]
     fn backend_max_concurrent_requests(&self) -> usize {
         self.backend_max_concurrent_requests

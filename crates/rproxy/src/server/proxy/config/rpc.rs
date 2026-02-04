@@ -23,6 +23,15 @@ use crate::{
 
 #[derive(Args, Clone, Debug)]
 pub(crate) struct ConfigRpc {
+    /// enable atls for rpc proxy
+    #[arg(
+        env = "RPROXY_RPC_ATLS_ENABLED",
+        help_heading = "rpc",
+        long("rpc-atls-enabled"),
+        name("rpc_atls_enabled")
+    )]
+    pub(crate) atls_enabled: bool,
+
     /// url of rpc backend
     #[arg(
         default_value = "http://127.0.0.1:18645",
@@ -358,6 +367,11 @@ impl ConfigRpc {
 }
 
 impl ConfigProxyHttp for ConfigRpc {
+    #[inline]
+    fn atls_enabled(&self) -> bool {
+        self.atls_enabled
+    }
+
     #[inline]
     fn backend_max_concurrent_requests(&self) -> usize {
         self.backend_max_concurrent_requests
