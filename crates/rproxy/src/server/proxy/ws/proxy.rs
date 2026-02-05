@@ -167,9 +167,9 @@ where
         .shutdown_signal(canceller.cancelled_owned())
         .workers(workers_count);
 
-        let proxy = match if tls.enabled() {
-            let cert = tls.certificate().clone();
-            let key = tls.key().clone_key();
+        let proxy = match if tls.tls_enabled() {
+            let cert = tls.tls_certificate().clone();
+            let key = tls.tls_key().clone_key();
 
             server.listen_rustls_0_23(
                 listener,
