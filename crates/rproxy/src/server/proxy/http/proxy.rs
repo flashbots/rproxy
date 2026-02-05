@@ -2080,3 +2080,352 @@ struct ProxiedHttpCombo {
     req: ProxiedHttpRequest,
     res: ProxiedHttpResponse,
 }
+
+#[cfg(test)]
+mod tests {
+    use std::net::SocketAddr;
+
+    // use attested_tls_proxy::{attested_rpc::AttestedRpcClient, attested_tls::AttestedTlsClient};
+    use alloy_rpc_client::ReqwestClient;
+    use clap::Parser;
+    use http_body_util::{BodyExt, Full};
+    use jsonrpsee::{
+        RpcModule,
+        server::{ServerBuilder, ServerHandle},
+    };
+    use rustls::{
+        ClientConfig,
+        pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName},
+    };
+    use tracing_subscriber::{EnvFilter, fmt};
+
+    use crate::{
+        config::Config,
+        server::proxy::{config::ConfigRpc, http::ProxyHttpInnerRpc},
+    };
+
+    static INIT: std::sync::Once = std::sync::Once::new();
+
+    use super::*;
+
+    fn init_tracing() {
+        INIT.call_once(|| {
+            let filter =
+                EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+
+            fmt()
+                .with_env_filter(filter)
+                .with_test_writer() // <-- IMPORTANT for tests
+                .init();
+        });
+    }
+
+    fn generate_certificate_chain() -> (Vec<CertificateDer<'static>>, PrivateKeyDer<'static>) {
+        let ip = [127, 0, 0, 1].into();
+        let mut params = rcgen::CertificateParams::new(vec![]).unwrap();
+        params.subject_alt_names.push(rcgen::SanType::IpAddress(ip));
+        params.subject_alt_names.push(rcgen::SanType::DnsName("foo".try_into().unwrap()));
+        params.distinguished_name.push(rcgen::DnType::CommonName, ip.to_string());
+
+        let keypair = rcgen::KeyPair::generate().unwrap();
+        let cert = params.self_signed(&keypair).unwrap();
+
+        let certs = vec![CertificateDer::from(cert)];
+        let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(keypair.serialize_der()));
+        (certs, key)
+    }
+
+    /// Starts a JSON-RPC HTTP server on a random local port
+    async fn spawn_test_rpc_server() -> (SocketAddr, ServerHandle) {
+        let server = ServerBuilder::default().build("127.0.0.1:0").await.unwrap();
+
+        let addr: SocketAddr = server.local_addr().unwrap();
+
+        let mut module = RpcModule::new(());
+
+        // Mock ethereum-like RPC method
+        module
+            .register_async_method("eth_chainId", |_params, _ctx, _ext| async move {
+                Ok::<_, jsonrpsee::types::ErrorObjectOwned>("0x1")
+            })
+            .unwrap();
+
+        let handle = server.start(module);
+
+        (addr, handle)
+    }
+
+    fn certs_and_key_to_pem_strings(
+        input: (&[CertificateDer<'_>], PrivateKeyDer<'_>),
+    ) -> Result<(String, String), pem_rfc7468::Error> {
+        let (certs, private_key) = input;
+
+        // Encode cert chain
+        let mut certs_pem = String::new();
+        for cert in certs {
+            let block = pem_rfc7468::encode_string(
+                "CERTIFICATE",
+                pem_rfc7468::LineEnding::LF,
+                cert.as_ref(),
+            )?;
+            certs_pem.push_str(&block);
+            certs_pem.push('\n');
+        }
+
+        let (label, key_der): (&'static str, &[u8]) = match &private_key {
+            PrivateKeyDer::Pkcs8(k) => ("PRIVATE KEY", k.secret_pkcs8_der()),
+            _ => panic!("expected PKCS#8 private key for tests"),
+        };
+
+        let key_pem = pem_rfc7468::encode_string(label, pem_rfc7468::LineEnding::LF, key_der)?;
+
+        Ok((certs_pem, key_pem))
+    }
+
+    #[tokio::test]
+    async fn test_plain_http_proxy() {
+        // Setup logging
+        init_tracing();
+
+        // Setup a simple RPC server to proxy requests to
+        let (target_addr, _handle) = spawn_test_rpc_server().await;
+
+        // Set their names in config.tls
+        let config = Config::parse_from(["rproxy"]);
+
+        let mut config_rpc = config.rpc;
+        config_rpc.backend_url = format!("http://{target_addr}");
+
+        // TODO ideally use port 0 and have ProxyHttp return the port it bound to to
+        // avoid conflicts
+        let proxy_addr = "127.0.0.1:8645";
+        config_rpc.listen_address = proxy_addr.to_string();
+
+        let (resetter, _resetter_rx) = tokio::sync::broadcast::channel(1);
+
+        tokio::spawn(async move {
+            ProxyHttp::<ConfigRpc, ProxyHttpInnerRpc>::run(
+                config_rpc,
+                config.tls,
+                Metrics::new(config.metrics).into(),
+                tokio_util::sync::CancellationToken::new(),
+                resetter,
+            )
+            .await
+            .unwrap();
+        });
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
+        let proxy_url = Url::parse(&format!("http://{}", proxy_addr.to_string())).unwrap();
+        let rpc_client: alloy_rpc_client::ReqwestClient =
+            alloy_rpc_client::ClientBuilder::default().http(proxy_url);
+
+        let response: String =
+            rpc_client.request("eth_chainId", vec![serde_json::Value::Null]).await.unwrap();
+        assert_eq!(response, "0x1");
+    }
+
+    #[tokio::test]
+    async fn test_tls_http_proxy() {
+        // Setup logging
+        init_tracing();
+
+        rustls::crypto::CryptoProvider::install_default(
+            rustls::crypto::aws_lc_rs::default_provider(),
+        )
+        .unwrap();
+
+        // Setup a simple RPC server to proxy requests to
+        let (target_addr, _handle) = spawn_test_rpc_server().await;
+
+        // Gererate cetificate chain and key for testing
+        let (cert_chain, key) = generate_certificate_chain();
+
+        // Write certificate and key to temporary files
+        let (cert_chain_pem, key_pem) = certs_and_key_to_pem_strings((&cert_chain, key)).unwrap();
+        let storage = tempfile::TempDir::new().unwrap();
+        let cert_path = storage.path().join("cert_chain.pem");
+        let key_path = storage.path().join("key.pem");
+        std::fs::write(&cert_path, cert_chain_pem).unwrap();
+        std::fs::write(&key_path, key_pem).unwrap();
+
+        // Set their names in config.tls
+        let mut config = Config::parse_from(["rproxy"]);
+        config.tls.tls_certificate = cert_path.to_str().unwrap().to_string();
+        config.tls.tls_key = key_path.to_str().unwrap().to_string();
+        // config.tls.enable_attested_tls = true;
+
+        let mut config_rpc = config.rpc;
+        config_rpc.backend_url = format!("http://{target_addr}");
+
+        // TODO ideally use port 0 and have ProxyHttp return the port it bound to to
+        // avoid conflicts
+        let proxy_addr: SocketAddr = "127.0.0.1:8646".parse().unwrap();
+        config_rpc.listen_address = proxy_addr.to_string();
+
+        let (resetter, _resetter_rx) = tokio::sync::broadcast::channel(1);
+
+        tokio::spawn(async move {
+            ProxyHttp::<ConfigRpc, ProxyHttpInnerRpc>::run(
+                config_rpc,
+                config.tls,
+                Metrics::new(config.metrics).into(),
+                tokio_util::sync::CancellationToken::new(),
+                resetter,
+            )
+            .await
+            .unwrap();
+        });
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
+
+        let mut root_store = rustls::RootCertStore::empty();
+        root_store.add(cert_chain[0].clone()).unwrap();
+        let client_config =
+            ClientConfig::builder().with_root_certificates(root_store).with_no_client_auth();
+
+        let connector = tokio_rustls::TlsConnector::from(Arc::new(client_config));
+
+        let tcp_connection = tokio::net::TcpStream::connect(&proxy_addr).await.unwrap();
+        let tls_stream = connector
+            .connect(ServerName::IpAddress(proxy_addr.ip().into()), tcp_connection)
+            .await
+            .unwrap();
+
+        let io = hyper_util::rt::TokioIo::new(tls_stream);
+        let (mut sender, conn) = hyper::client::conn::http1::handshake(io).await.unwrap();
+        tokio::spawn(async move {
+            if let Err(err) = conn.await {
+                eprintln!("hyper connection error: {err}");
+            }
+        });
+        let request_body = r#"
+            {
+              "jsonrpc": "2.0",
+              "method": "eth_chainId",
+              "id": 0,
+              "params": [null]
+            }
+            "#;
+        let req = hyper::Request::builder()
+            .method("POST")
+            .uri("eth_chainId")
+            .header(hyper::header::HOST, proxy_addr.ip().to_string())
+            .header(hyper::header::CONTENT_TYPE, "application/json")
+            .body(Full::new(Bytes::from(request_body.as_bytes().to_vec())))
+            .unwrap();
+
+        let resp = sender.send_request(req).await.unwrap();
+
+        let body_bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(body_bytes, b"{\"jsonrpc\":\"2.0\",\"id\":0,\"result\":\"0x1\"}".to_vec());
+    }
+
+    #[tokio::test]
+    async fn test_nested_tls_http_proxy() {
+        // Setup logging
+        init_tracing();
+
+        rustls::crypto::CryptoProvider::install_default(
+            rustls::crypto::aws_lc_rs::default_provider(),
+        )
+        .unwrap();
+
+        // Setup a simple RPC server to proxy requests to
+        let (target_addr, _handle) = spawn_test_rpc_server().await;
+
+        // Gererate cetificate chain and key for testing
+        let (cert_chain, key) = generate_certificate_chain();
+
+        // Write certificate and key to temporary files
+        let (cert_chain_pem, key_pem) = certs_and_key_to_pem_strings((&cert_chain, key)).unwrap();
+        let storage = tempfile::TempDir::new().unwrap();
+        let cert_path = storage.path().join("cert_chain.pem");
+        let key_path = storage.path().join("key.pem");
+        std::fs::write(&cert_path, cert_chain_pem).unwrap();
+        std::fs::write(&key_path, key_pem).unwrap();
+
+        // Set their names in config.tls
+        let mut config = Config::parse_from(["rproxy"]);
+        config.tls.tls_certificate = cert_path.to_str().unwrap().to_string();
+        config.tls.tls_key = key_path.to_str().unwrap().to_string();
+        config.tls.tls_attestation_key = "tls_attestation_key.pem".to_string();
+        config.clone().validate().unwrap();
+
+        let mut config_rpc = config.rpc;
+        config_rpc.backend_url = format!("http://{target_addr}");
+
+        // TODO ideally use port 0 and have ProxyHttp return the port it bound to to
+        // avoid conflicts
+        let proxy_addr: SocketAddr = "127.0.0.1:8646".parse().unwrap();
+        config_rpc.listen_address = proxy_addr.to_string();
+
+        let (resetter, _resetter_rx) = tokio::sync::broadcast::channel(1);
+
+        tokio::spawn(async move {
+            ProxyHttp::<ConfigRpc, ProxyHttpInnerRpc>::run(
+                config_rpc,
+                config.tls,
+                Metrics::new(config.metrics).into(),
+                tokio_util::sync::CancellationToken::new(),
+                resetter,
+            )
+            .await
+            .unwrap();
+        });
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
+
+        let mut root_store = rustls::RootCertStore::empty();
+        root_store.add(cert_chain[0].clone()).unwrap();
+        let client_config =
+            ClientConfig::builder().with_root_certificates(root_store).with_no_client_auth();
+
+        let connector = tokio_rustls::TlsConnector::from(Arc::new(client_config));
+
+        let tcp_connection = tokio::net::TcpStream::connect(&proxy_addr).await.unwrap();
+        let tls_stream = connector
+            .connect(ServerName::try_from(proxy_addr.ip().to_string()).unwrap(), tcp_connection)
+            .await
+            .unwrap();
+
+        let client_config = ClientConfig::builder()
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(atls::debug::AcceptAnyIssuerVerifier))
+            .with_no_client_auth();
+
+        let connector_inner = tokio_rustls::TlsConnector::from(Arc::new(client_config));
+        let tls_stream_inner = connector_inner
+            .connect(ServerName::try_from("foo").unwrap(), tls_stream)
+            .await
+            .unwrap();
+
+        let io = hyper_util::rt::TokioIo::new(tls_stream_inner);
+        let (mut sender, conn) = hyper::client::conn::http1::handshake(io).await.unwrap();
+        tokio::spawn(async move {
+            if let Err(err) = conn.await {
+                eprintln!("hyper connection error: {err}");
+            }
+        });
+        let request_body = r#"
+            {
+              "jsonrpc": "2.0",
+              "method": "eth_chainId",
+              "id": 0,
+              "params": [null]
+            }
+            "#;
+        let req = hyper::Request::builder()
+            .method("POST")
+            .uri("eth_chainId")
+            .header(hyper::header::HOST, proxy_addr.ip().to_string())
+            .header(hyper::header::CONTENT_TYPE, "application/json")
+            .body(Full::new(Bytes::from(request_body.as_bytes().to_vec())))
+            .unwrap();
+
+        let resp = sender.send_request(req).await.unwrap();
+
+        let body_bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(body_bytes, b"{\"jsonrpc\":\"2.0\",\"id\":0,\"result\":\"0x1\"}".to_vec());
+    }
+}
