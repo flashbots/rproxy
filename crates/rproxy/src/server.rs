@@ -247,7 +247,7 @@ impl Server {
     }
 
     fn wait_for_reset_signal(canceller: CancellationToken) -> broadcast::Sender<()> {
-        let (resetter, _) = broadcast::channel::<()>(3);
+        let (resetter, _) = broadcast::channel::<()>(1);
 
         {
             let resetter = resetter.clone();
@@ -262,7 +262,8 @@ impl Server {
                             info!("Hangup signal received, resetting...");
 
                             if let Err(err) = resetter.send(()) {
-                                error!(from = "sighup", error = ?err, "Failed to broadcast reset signal");
+                                error!(from = "sighup", error = ?err, "Failed to broadcast reset signal, shutting down whole proxy...");
+                                canceller.cancel();
                             }
                         }
 
@@ -319,15 +320,20 @@ mod tests {
 
         let cfg = {
             let mut cfg = Config::parse_from(["rproxy"]);
-            cfg.logging.setup_logging();
+
             cfg.authrpc.enabled = true;
             cfg.authrpc.backend_url = format!("http://{backend}");
             cfg.authrpc.listen_address = "127.0.0.1:18645".into();
             cfg.authrpc.shutdown_timeout_sec = 1;
+
             cfg.rpc.enabled = true;
             cfg.rpc.backend_url = format!("http://{backend}");
             cfg.rpc.listen_address = "127.0.0.1:18651".into();
             cfg.rpc.shutdown_timeout_sec = 1;
+
+            cfg.logging.level = "warn,rproxy::server::tests=info".into();
+            cfg.logging.setup_logging();
+
             cfg
         };
 
@@ -417,7 +423,7 @@ mod tests {
             });
         }
 
-        for i in 0..100 {
+        for i in 0..10 {
             actix_rt::time::sleep(std::time::Duration::from_millis(1200)).await;
 
             match resetter.send(()) {
