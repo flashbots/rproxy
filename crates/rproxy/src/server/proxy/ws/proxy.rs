@@ -137,6 +137,7 @@ where
         let client_connections_count = shared.client_connections_count.clone();
         let worker_canceller = canceller.clone();
         let worker_resetter = resetter.clone();
+        let shutdown_timeout_sec = shared.config().shutdown_timeout_sec();
 
         info!(
             proxy = P::name(),
@@ -165,6 +166,7 @@ where
             config.keepalive_interval(),
         ))
         .shutdown_signal(canceller.cancelled_owned())
+        .shutdown_timeout(shutdown_timeout_sec)
         .workers(workers_count);
 
         let proxy = match if tls.enabled() {

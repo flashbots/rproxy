@@ -188,6 +188,7 @@ where
 
         let server = actix_server::Server::build()
             .shutdown_signal(canceller.cancelled_owned())
+            .shutdown_timeout(shared.config().shutdown_timeout_sec())
             .workers(workers_count);
 
         let server = if tls.enabled() {

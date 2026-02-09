@@ -243,6 +243,17 @@ pub(crate) struct ConfigRpc {
         name("rpc_remove_backend_from_mirroring_peers")
     )]
     pub(crate) remove_backend_from_mirroring_peers: bool,
+
+    /// timeout for graceful shutdown of rpc workers
+    #[arg(
+        default_value = "5",
+        env = "RPROXY_RPC_SHUTDOWN_TIMEOUT_SEC",
+        help_heading = "rpc",
+        long("rpc-shutdown-timeout-sec"),
+        name("rpc_shutdown_timeout_sec"),
+        value_name = "seconds"
+    )]
+    pub(crate) shutdown_timeout_sec: u64,
 }
 
 impl ConfigRpc {
@@ -449,6 +460,11 @@ impl ConfigProxyHttp for ConfigRpc {
     #[inline]
     fn prealloacated_response_buffer_size(&self) -> usize {
         1024 * self.prealloacated_response_buffer_size_kb
+    }
+
+    #[inline]
+    fn shutdown_timeout_sec(&self) -> u64 {
+        self.shutdown_timeout_sec
     }
 }
 
