@@ -14,6 +14,7 @@ const JRPC_METHOD_FCUV3_WITH_PAYLOAD: Cow<'static, str> =
 
 const EMPTY_PARAMS: &Vec<serde_json::Value> = &Vec::new();
 
+#[derive(Debug)]
 pub(crate) struct JrpcRequestMeta {
     id: Id,
 
@@ -54,6 +55,7 @@ impl<'a> Deserialize<'a> for JrpcRequestMeta {
         struct JrpcRequestMetaWire {
             id: Id,
             method: Cow<'static, str>,
+            #[serde(default)]
             params: serde_json::Value,
         }
 
@@ -93,7 +95,7 @@ impl<'a> Deserialize<'a> for JrpcRequestMeta {
 
 const JRPC_METHOD_BATCH: Cow<'static, str> = Cow::Borrowed("batch");
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(untagged)]
 pub(crate) enum JrpcRequestMetaMaybeBatch {
     Single(JrpcRequestMeta),
@@ -105,6 +107,56 @@ impl JrpcRequestMetaMaybeBatch {
         match self {
             Self::Single(jrpc) => jrpc.method_enriched.clone(),
             Self::Batch(_) => JRPC_METHOD_BATCH.clone(),
+        }
+    }
+}
+
+// tests ---------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_jrpc_request_meta_maybe_batch_deserialize() {
+        let json = r#"[
+            {
+                "jsonrpc": "2.0",
+                "id": 1108954,
+                "method": "net_version"
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "1108955",
+                "method": "eth_getBlockByNumber",
+                "params": [
+                    "0x73f151",
+                    true
+                ]
+            }
+        ]"#;
+
+        let result: Result<JrpcRequestMetaMaybeBatch, _> = serde_json::from_str(json);
+        assert!(result.is_ok(), "{result:?}");
+
+        let batch = result.unwrap();
+        match batch {
+            JrpcRequestMetaMaybeBatch::Batch(requests) => {
+                assert_eq!(requests.len(), 2);
+
+                // First request
+                assert_eq!(*requests[0].id(), Id::Number(1108954));
+                assert_eq!(requests[0].method(), Cow::Borrowed("net_version"));
+                assert!(requests[0].params().is_empty());
+
+                // Second request
+                assert_eq!(*requests[1].id(), Id::Number(1108955));
+                assert_eq!(requests[1].method(), Cow::Borrowed("eth_getBlockByNumber"));
+                assert_eq!(requests[1].params().len(), 2);
+            }
+            JrpcRequestMetaMaybeBatch::Single(_) => {
+                panic!("Expected Batch variant, got Single");
+            }
         }
     }
 }
