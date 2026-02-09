@@ -70,3 +70,8 @@ uuid = { version = "1.18.1", features = ["v7" ]}
 valuable = { version = "0.1.1", features = ["derive"] }
 x509-parser = "0.18.0"
 zstd = "0.13.3"
+
+[dev-dependencies]
+actix-rt = "2.11.0"
+jsonrpsee = { version = "0.26.0", features = ["server"] }
+mime = "0.3.17"
