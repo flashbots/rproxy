@@ -28,8 +28,6 @@ use crate::{
     utils::tls_certificate_validity_timestamps,
 };
 
-const MAX_OPEN_FILES: u64 = 10240;
-
 // Proxy ---------------------------------------------------------------
 
 pub struct Server {}
