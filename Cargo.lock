@@ -3459,7 +3459,7 @@ checksum = "afab94fb28594581f62d981211a9a4d53cc8130bbcbbb89a0440d9b8e81a7746"
 
 [[package]]
 name = "rproxy"
-version = "0.0.10"
+version = "0.0.11"
 dependencies = [
  "actix",
  "actix-http",
