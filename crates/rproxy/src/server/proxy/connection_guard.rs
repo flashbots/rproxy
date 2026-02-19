@@ -7,7 +7,9 @@ use std::{
     time::Duration,
 };
 
-use actix_web::dev::Extensions;
+use actix_tls::accept::rustls_0_23::TlsStream;
+use actix_web::{dev::Extensions, rt::net::TcpStream};
+use atls::server::ActixNestingTlsStream;
 use tracing::{debug, warn};
 use uuid::Uuid;
 
@@ -62,19 +64,25 @@ impl ConnectionGuard {
                 metrics.client_connections_established_count.get_or_create(&metric_labels).inc();
             }
 
-            let stream: Option<&actix_web::rt::net::TcpStream> = if let Some(stream) = connection.downcast_ref::<actix_tls::accept::rustls_0_23::TlsStream<actix_web::rt::net::TcpStream>>() {
-                let (stream, _) = stream.get_ref();
-                Some(stream)
-            } else if let Some(stream) = connection.downcast_ref::<actix_web::rt::net::TcpStream>() {
-                Some(stream)
-            } else {
-                warn!(
-                    proxy = proxy,
-                    connection_type = std::any::type_name_of_val(connection),
-                    "Unexpected connection type",
-                );
-                None
-            };
+            let stream: Option<&TcpStream> =
+                if let Some(stream) = connection.downcast_ref::<TcpStream>() {
+                    Some(stream)
+                } else if let Some(stream) = connection.downcast_ref::<TlsStream<TcpStream>>() {
+                    let (stream, _) = stream.get_ref();
+                    Some(stream)
+                } else if let Some(stream) =
+                    connection.downcast_ref::<ActixNestingTlsStream<TcpStream>>()
+                {
+                    let (stream, _) = stream.get_ref().0.get_ref();
+                    Some(stream)
+                } else {
+                    warn!(
+                        proxy = proxy,
+                        connection_type = std::any::type_name_of_val(connection),
+                        "Unexpected connection type",
+                    );
+                    None
+                };
 
             if let Some(stream) = stream &&
                 let Err(err) = setup_keepalive(stream, keep_alive_interval)

@@ -1,4 +1,6 @@
-use x509_parser::prelude::FromDer;
+use x509_parser::prelude::{FromDer, *};
+
+// tls_certificate_validity_timestamps ---------------------------------
 
 pub(crate) fn tls_certificate_validity_timestamps(
     cert: &Vec<rustls::pki_types::CertificateDer<'_>>,
@@ -7,7 +9,7 @@ pub(crate) fn tls_certificate_validity_timestamps(
     let mut valid_not_after = i64::MAX;
 
     for cert in cert {
-        if let Ok((_, cert)) = x509_parser::prelude::X509Certificate::from_der(cert) {
+        if let Ok((_, cert)) = X509Certificate::from_der(cert) {
             let cert_valid_not_before = cert.validity.not_before.timestamp();
             valid_not_before = std::cmp::max(valid_not_before, cert_valid_not_before);
 

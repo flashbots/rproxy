@@ -16,6 +16,8 @@ pub(crate) fn get_all_local_ip_addresses() -> Vec<IpAddr> {
     ips
 }
 
+// setup_keepalive -----------------------------------------------------
+
 pub(crate) fn setup_keepalive(
     stream: &tokio::net::TcpStream,
     interval: Duration,

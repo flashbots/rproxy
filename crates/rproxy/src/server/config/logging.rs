@@ -37,10 +37,7 @@ impl ConfigLogging {
             errs.push(ConfigLoggingError::LevelInvalid { err: err.to_string() });
         });
 
-        match errs.len() {
-            0 => None,
-            _ => Some(errs),
-        }
+        (!errs.is_empty()).then_some(errs)
     }
 
     pub(crate) fn setup_logging(&self) {
