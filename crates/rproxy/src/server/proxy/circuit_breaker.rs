@@ -6,8 +6,8 @@ use awc::{
     http::{self, Method, header},
 };
 use parking_lot::Mutex;
-use tokio::sync::broadcast;
-use tracing::{debug, error, warn};
+use tokio_util::sync::CancellationToken;
+use tracing::{debug, warn};
 
 use crate::server::proxy::config::ConfigCircuitBreaker;
 
@@ -77,26 +77,21 @@ impl CircuitBreaker {
 
     pub(crate) async fn run(
         self,
-        canceller: tokio_util::sync::CancellationToken,
-        resetter: broadcast::Sender<()>,
+        shutdown_signal: CancellationToken,
+        reset_signal: CancellationToken,
     ) {
-        let canceller = canceller.clone();
-        let resetter = resetter.clone();
-
         let mut ticker = tokio::time::interval(self.config.poll_interval);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         // spawning locally b/c actix client is thread-local by design
         if let Err(err) = tokio::task::spawn_local(async move {
             loop {
-                let resetter = resetter.clone();
-
                 tokio::select! {
                     _ = ticker.tick() => {
-                        self.poll(resetter).await;
+                        self.poll(reset_signal.clone()).await;
                     }
 
-                    _ = canceller.cancelled() => {
+                    _ = shutdown_signal.cancelled() => {
                         break
                     }
                 }
@@ -112,7 +107,7 @@ impl CircuitBreaker {
         }
     }
 
-    async fn poll(&self, resetter: broadcast::Sender<()>) {
+    async fn poll(&self, reset_signal: CancellationToken) {
         let req = self
             .client
             .request(Method::GET, self.config.url.clone())
@@ -162,26 +157,12 @@ impl CircuitBreaker {
                 this.curr_status = Status::Unhealthy;
 
                 warn!(service = Self::name(), "Backend became unhealthy, resetting...");
-
-                if let Err(err) = resetter.send(()) {
-                    error!(
-                        from = Self::name(),
-                        error = ?err,
-                        "Failed to broadcast reset signal",
-                    );
-                }
+                reset_signal.cancel();
             }
 
             (Status::Unhealthy, Status::Unhealthy) => {
                 warn!(service = Self::name(), "Backend is still unhealthy, resetting...");
-
-                if let Err(err) = resetter.send(()) {
-                    error!(
-                        from = Self::name(),
-                        error = ?err,
-                        "Failed to broadcast reset signal",
-                    );
-                }
+                reset_signal.cancel();
             }
 
             (Status::Unhealthy, Status::Healthy) => {
