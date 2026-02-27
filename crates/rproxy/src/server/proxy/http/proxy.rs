@@ -142,7 +142,7 @@ where
         config: C,
         tls: ConfigTls,
         metrics: Arc<Metrics>,
-        canceller: tokio_util::sync::CancellationToken,
+        shutdown_signal: CancellationToken,
         reset_signal: CancellationToken,
     ) -> Result<(), Box<dyn std::error::Error + Send>> {
         let listen_address = config.listen_address();
@@ -187,7 +187,7 @@ where
         );
 
         let server = actix_server::Server::build()
-            .shutdown_signal(canceller.cancelled_owned())
+            .shutdown_signal(shutdown_signal.cancelled_owned())
             .shutdown_timeout(shared.config().shutdown_timeout_sec())
             .workers(workers_count);
 

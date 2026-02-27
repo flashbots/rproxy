@@ -136,8 +136,8 @@ where
 
         let shared = ProxyWsSharedState::<C, P>::new(config.clone(), &metrics);
         let client_connections_count = shared.client_connections_count.clone();
-        let worker_canceller = shutdown_signal.clone();
-        let worker_resetter = reset_signal.clone();
+        let worker_shutdown_signal = shutdown_signal.clone();
+        let worker_reset_signal = reset_signal.clone();
         let shutdown_timeout_sec = shared.config().shutdown_timeout_sec();
 
         info!(
@@ -150,8 +150,8 @@ where
         let server = HttpServer::new(move || {
             let this = web::Data::new(Self::new(
                 shared.clone(),
-                worker_canceller.clone(),
-                worker_resetter.clone(),
+                worker_shutdown_signal.clone(),
+                worker_reset_signal.clone(),
             ));
 
             App::new()

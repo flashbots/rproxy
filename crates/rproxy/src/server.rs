@@ -69,11 +69,11 @@ impl Server {
         // spawn metrics service
         let metrics = Arc::new(Metrics::new(config.metrics.clone()));
         {
-            let canceller = shutdown_signal.clone();
+            let shutdown_signal = shutdown_signal.clone();
             let metrics = metrics.clone();
 
             tokio::spawn(async move {
-                metrics.run(canceller).await.inspect_err(|err| {
+                metrics.run(shutdown_signal).await.inspect_err(|err| {
                     error!(
                         service = Metrics::name(),
                         error = ?err,
@@ -122,7 +122,7 @@ impl Server {
                 let tls = config.tls.clone();
                 let config = config.authrpc.clone();
                 let metrics = metrics.clone();
-                let canceller = shutdown_signal.clone();
+                let shutdown_signal = shutdown_signal.clone();
                 let reset_signal = reset_signal.clone();
 
                 services.push(tokio::spawn(async move {
@@ -130,7 +130,7 @@ impl Server {
                         config,
                         tls,
                         metrics,
-                        canceller.clone(),
+                        shutdown_signal.clone(),
                         reset_signal,
                     )
                     .await
@@ -140,7 +140,7 @@ impl Server {
                             error = ?err,
                             "Failed to start http-proxy, terminating...",
                         );
-                        canceller.cancel();
+                        shutdown_signal.cancel();
                     })
                 }));
             }
@@ -150,7 +150,7 @@ impl Server {
                 let tls = config.tls.clone();
                 let config = config.rpc.clone();
                 let metrics = metrics.clone();
-                let canceller = shutdown_signal.clone();
+                let shutdown_signal = shutdown_signal.clone();
                 let reset_signal = reset_signal.clone();
 
                 services.push(tokio::spawn(async move {
@@ -158,7 +158,7 @@ impl Server {
                         config,
                         tls,
                         metrics,
-                        canceller.clone(),
+                        shutdown_signal.clone(),
                         reset_signal,
                     )
                     .await
@@ -168,7 +168,7 @@ impl Server {
                             error = ?err,
                             "Failed to start http-proxy, terminating...",
                         );
-                        canceller.cancel();
+                        shutdown_signal.cancel();
                     })
                 }));
             }
@@ -178,7 +178,7 @@ impl Server {
                 let tls = config.tls.clone();
                 let config = config.flashblocks.clone();
                 let metrics = metrics.clone();
-                let canceller = shutdown_signal.clone();
+                let shutdown_signal = shutdown_signal.clone();
                 let reset_signal = reset_signal.clone();
 
                 services.push(tokio::spawn(async move {
@@ -186,7 +186,7 @@ impl Server {
                         config,
                         tls,
                         metrics,
-                        canceller.clone(),
+                        shutdown_signal.clone(),
                         reset_signal,
                     )
                     .await
@@ -196,7 +196,7 @@ impl Server {
                             error = ?err,
                             "Failed to start websocket-proxy, terminating...",
                         );
-                        canceller.cancel();
+                        shutdown_signal.cancel();
                     })
                 }));
             }
@@ -212,10 +212,10 @@ impl Server {
     }
 
     fn wait_for_shutdown_signal() -> CancellationToken {
-        let canceller = tokio_util::sync::CancellationToken::new();
+        let shutdown_signal = CancellationToken::new();
 
         {
-            let canceller = canceller.clone();
+            let shutdown_signal = shutdown_signal.clone();
 
             tokio::spawn(async move {
                 let sigint = async {
@@ -239,11 +239,11 @@ impl Server {
 
                 info!("Shutdown signal received, stopping...");
 
-                canceller.cancel();
+                shutdown_signal.cancel();
             });
         }
 
-        canceller
+        shutdown_signal
     }
 
     fn wait_for_reset_signal(shutdown_signal: CancellationToken) -> CancellationToken {
