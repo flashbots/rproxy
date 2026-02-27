@@ -94,6 +94,10 @@ impl CircuitBreaker {
                     _ = shutdown_signal.cancelled() => {
                         break
                     }
+
+                    _ = reset_signal.cancelled() => {
+                        break
+                    }
                 }
             }
         })

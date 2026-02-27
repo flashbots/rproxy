@@ -34,15 +34,13 @@ pub struct Server {}
 impl Server {
     pub async fn run(config: Config) -> Result<(), Box<dyn std::error::Error + Send>> {
         let shutdown_signal = Server::wait_for_shutdown_signal();
-        let reset_signal = Server::wait_for_reset_signal(shutdown_signal.clone());
 
-        Self::_run(config, shutdown_signal, reset_signal).await
+        Self::_run(config, shutdown_signal).await
     }
 
     async fn _run(
         config: Config,
         shutdown_signal: CancellationToken,
-        reset_signal: CancellationToken,
     ) -> Result<(), Box<dyn std::error::Error + Send>> {
         // try to set system limits
         match rlimit::getrlimit(rlimit::Resource::NOFILE) {
@@ -84,29 +82,36 @@ impl Server {
             });
         }
 
-        // spawn circuit-breaker
-        if !config.circuit_breaker.url.is_empty() {
-            let shutdown_signal = shutdown_signal.clone();
-            let reset_signal = reset_signal.clone();
-
-            let _ = std::thread::spawn(move || {
-                let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
-                    Ok(rt) => rt,
-                    Err(err) => {
-                        error!(error = ?err, "Failed to initialise a single-threaded runtime for circuit-breaker");
-                        std::process::exit(-1);
-                    }
-                };
-
-                let circuit_breaker = CircuitBreaker::new(config.circuit_breaker.clone());
-
-                tokio::task::LocalSet::new().block_on(&rt, async move {
-                    circuit_breaker.run(shutdown_signal, reset_signal).await
-                })
-            });
-        }
-
         while !shutdown_signal.is_cancelled() {
+            let reset_signal = Server::wait_for_reset_signal(shutdown_signal.clone());
+
+            // spawn circuit-breaker
+            if !config.circuit_breaker.url.is_empty() {
+                let shutdown_signal = shutdown_signal.clone();
+                let reset_signal = reset_signal.clone();
+
+                let circuit_breaker_config = config.circuit_breaker.clone();
+
+                let _ = std::thread::spawn(move || {
+                    let rt = match tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                    {
+                        Ok(rt) => rt,
+                        Err(err) => {
+                            error!(error = ?err, "Failed to initialise a single-threaded runtime for circuit-breaker");
+                            std::process::exit(-1);
+                        }
+                    };
+
+                    let circuit_breaker = CircuitBreaker::new(circuit_breaker_config);
+
+                    tokio::task::LocalSet::new().block_on(&rt, async move {
+                        circuit_breaker.run(shutdown_signal, reset_signal).await
+                    })
+                });
+            }
+
             if config.tls.enabled() {
                 let metrics = metrics.clone();
                 let (not_before, not_after) =
@@ -338,9 +343,8 @@ mod tests {
 
         let server = {
             let shutdown_signal = shutdown_signal.clone();
-            let reset_signal = reset_signal.clone();
 
-            actix_rt::spawn(async move { Server::_run(cfg, shutdown_signal, reset_signal).await })
+            actix_rt::spawn(async move { Server::_run(cfg, shutdown_signal).await })
         };
         actix_rt::time::sleep(std::time::Duration::from_millis(100)).await;
 
