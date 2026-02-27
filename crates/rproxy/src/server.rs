@@ -347,6 +347,7 @@ mod tests {
         {
             let shutdown_signal = shutdown_signal.clone();
             let client = Client::builder().timeout(Duration::from_millis(10)).finish();
+            let proxy_addr_authrpc = proxy_addr_authrpc.clone();
 
             actix_rt::spawn(async move {
                 loop {
@@ -416,9 +417,43 @@ mod tests {
             });
         }
 
+        let client = Client::builder().timeout(Duration::from_millis(10)).finish();
+
         for _ in 0..10 {
-            actix_rt::time::sleep(std::time::Duration::from_millis(1200)).await;
             reset_signal.cancel();
+
+            actix_rt::time::sleep(std::time::Duration::from_millis(1200)).await;
+
+            let req = client
+                .post(format!("http://{proxy_addr_authrpc}"))
+                .insert_header((header::CONTENT_TYPE, mime::APPLICATION_JSON))
+                .send_body(r#"{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":1}"#);
+
+            tokio::select! {
+                res = req => {
+                    match res {
+                        Ok(mut res) => {
+                            match res.body().await {
+                                Err(err) => {
+                                    panic!("Failed to send a request: {err}");
+                                }
+                                Ok(body) => {
+                                    let body = String::from_utf8_lossy(&body).to_string();
+                                    info!("Sent a request and got a response: {body}");
+                                }
+                            }
+                        }
+
+                        Err(err) => {
+                            panic!("Failed to send a request: {err}");
+                        }
+                    }
+                }
+
+                _ = shutdown_signal.cancelled() => {
+                    break
+                }
+            }
         }
 
         shutdown_signal.cancel();
