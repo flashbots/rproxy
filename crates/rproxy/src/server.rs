@@ -28,8 +28,6 @@ use crate::{
     utils::tls_certificate_validity_timestamps,
 };
 
-const MAX_OPEN_FILES: u64 = 10240;
-
 // Proxy ---------------------------------------------------------------
 
 pub struct Server {}
@@ -39,6 +37,14 @@ impl Server {
         let canceller = Server::wait_for_shutdown_signal();
         let resetter = Server::wait_for_reset_signal(canceller.clone());
 
+        Self::_run(config, canceller, resetter).await
+    }
+
+    async fn _run(
+        config: Config,
+        canceller: CancellationToken,
+        resetter: broadcast::Sender<()>,
+    ) -> Result<(), Box<dyn std::error::Error + Send>> {
         // try to set system limits
         match rlimit::getrlimit(rlimit::Resource::NOFILE) {
             Ok((_, hard)) => {
@@ -195,7 +201,11 @@ impl Server {
                 }));
             }
 
-            futures::future::join_all(services).await;
+            for res in futures::future::join_all(services).await.iter() {
+                if let Err(err) = res {
+                    warn!(error = ?err, "One of the services had failed")
+                }
+            }
         }
 
         Ok(())
@@ -237,7 +247,7 @@ impl Server {
     }
 
     fn wait_for_reset_signal(canceller: CancellationToken) -> broadcast::Sender<()> {
-        let (resetter, _) = broadcast::channel::<()>(2);
+        let (resetter, _) = broadcast::channel::<()>(1);
 
         {
             let resetter = resetter.clone();
@@ -252,7 +262,8 @@ impl Server {
                             info!("Hangup signal received, resetting...");
 
                             if let Err(err) = resetter.send(()) {
-                                error!(from = "sighup", error = ?err, "Failed to broadcast reset signal");
+                                error!(from = "sighup", error = ?err, "Failed to broadcast reset signal, shutting down whole proxy...");
+                                canceller.cancel();
                             }
                         }
 
@@ -265,5 +276,207 @@ impl Server {
         }
 
         resetter
+    }
+}
+
+// tests ===============================================================
+
+#[cfg(test)]
+mod tests {
+    use std::{net::SocketAddr, time::Duration};
+
+    use awc::{Client, http::header};
+    use clap::Parser;
+    use jsonrpsee::{
+        RpcModule,
+        server::{ServerBuilder, ServerHandle},
+    };
+    use tracing::{debug, info};
+
+    use super::*;
+    use crate::config::Config;
+
+    async fn spawn_rpc_backend() -> (SocketAddr, ServerHandle) {
+        let server = ServerBuilder::default().build("127.0.0.1:0").await.unwrap();
+
+        let addr: SocketAddr = server.local_addr().unwrap();
+
+        let mut module = RpcModule::new(());
+
+        module
+            .register_async_method("eth_chainId", |_params, _ctx, _ext| async move {
+                Ok::<_, jsonrpsee::types::ErrorObjectOwned>("0x1")
+            })
+            .unwrap();
+
+        let handle = server.start(module);
+
+        (addr, handle)
+    }
+
+    #[actix_web::test]
+    async fn test_circuit_breaker() {
+        let (backend, _handle) = spawn_rpc_backend().await;
+
+        let cfg = {
+            let mut cfg = Config::parse_from(["rproxy"]);
+
+            cfg.authrpc.enabled = true;
+            cfg.authrpc.backend_url = format!("http://{backend}");
+            cfg.authrpc.listen_address = "127.0.0.1:18645".into();
+            cfg.authrpc.shutdown_timeout_sec = 1;
+
+            cfg.rpc.enabled = true;
+            cfg.rpc.backend_url = format!("http://{backend}");
+            cfg.rpc.listen_address = "127.0.0.1:18651".into();
+            cfg.rpc.shutdown_timeout_sec = 1;
+
+            cfg.logging.level = "warn,rproxy::server::tests=info".into();
+            cfg.logging.setup_logging();
+
+            cfg
+        };
+
+        let proxy_addr_authrpc = cfg.clone().authrpc.listen_address;
+        let proxy_addr_rpc = cfg.clone().rpc.listen_address;
+
+        let canceller = tokio_util::sync::CancellationToken::new();
+        let resetter = Server::wait_for_reset_signal(canceller.clone());
+
+        let server = {
+            let canceller = canceller.clone();
+            let resetter = resetter.clone();
+
+            actix_rt::spawn(async move { Server::_run(cfg, canceller, resetter).await })
+        };
+        actix_rt::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        {
+            let canceller = canceller.clone();
+            let client = Client::builder().timeout(Duration::from_millis(10)).finish();
+            let proxy_addr_authrpc = proxy_addr_authrpc.clone();
+
+            actix_rt::spawn(async move {
+                loop {
+                    actix_rt::time::sleep(std::time::Duration::from_millis(10)).await;
+
+                    let req = client
+                        .post(format!("http://{proxy_addr_authrpc}"))
+                        .insert_header((header::CONTENT_TYPE, mime::APPLICATION_JSON))
+                        .send_body(
+                            r#"{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":1}"#,
+                        );
+
+                    tokio::select! {
+                        res = req => {
+                            match res {
+                                Ok(mut res) => {
+                                    let _ = res.body().await;
+                                }
+
+                                Err(err) => {
+                                    debug!(error = ?err, "Failed to send a request");
+                                }
+                            }
+                        }
+
+                        _ = canceller.cancelled() => {
+                            break
+                        }
+                    }
+                }
+            });
+        }
+
+        {
+            let canceller = canceller.clone();
+            let client = Client::builder().timeout(Duration::from_millis(10)).finish();
+
+            actix_rt::spawn(async move {
+                loop {
+                    actix_rt::time::sleep(std::time::Duration::from_millis(10)).await;
+
+                    let req = client
+                        .post(format!("http://{proxy_addr_rpc}"))
+                        .insert_header((header::CONTENT_TYPE, mime::APPLICATION_JSON))
+                        .send_body(
+                            r#"{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":1}"#,
+                        );
+
+                    tokio::select! {
+                        res = req => {
+                            match res {
+                                Ok(mut res) => {
+                                    let _ = res.body().await;
+                                }
+
+                                Err(err) => {
+                                    debug!(error = ?err, "Failed to send a request");
+                                }
+                            }
+                        }
+
+                        _ = canceller.cancelled() => {
+                            break
+                        }
+                    }
+                }
+            });
+        }
+
+        let client = Client::builder().timeout(Duration::from_millis(10)).finish();
+
+        for i in 0..10 {
+            match resetter.send(()) {
+                Err(err) => {
+                    debug!(iteration = i, error = ?err, "Failed to send a reset");
+                }
+
+                Ok(proxies_count) => {
+                    info!(iteration = i, proxies_count = proxies_count, "Sent a reset");
+                    assert_eq!(
+                        proxies_count, 2,
+                        "sent reset wrong count of proxies: {proxies_count} != 2"
+                    );
+                }
+            }
+
+            actix_rt::time::sleep(std::time::Duration::from_millis(1200)).await;
+
+            let req = client
+                .post(format!("http://{proxy_addr_authrpc}"))
+                .insert_header((header::CONTENT_TYPE, mime::APPLICATION_JSON))
+                .send_body(r#"{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":1}"#);
+
+            tokio::select! {
+                res = req => {
+                    match res {
+                        Ok(mut res) => {
+                            match res.body().await {
+                                Err(err) => {
+                                    panic!("Failed to send a request: {err}");
+                                }
+                                Ok(body) => {
+                                    let body = String::from_utf8_lossy(&body).to_string();
+                                    info!("Sent a request and got a response: {body}");
+                                }
+                            }
+                        }
+
+                        Err(err) => {
+                            panic!("Failed to send a request: {err}");
+                        }
+                    }
+                }
+
+                _ = canceller.cancelled() => {
+                    break
+                }
+            }
+        }
+
+        canceller.cancel();
+
+        tokio::time::timeout(tokio::time::Duration::from_secs(5), server).await.ok();
     }
 }

@@ -188,6 +188,7 @@ where
 
         let server = actix_server::Server::build()
             .shutdown_signal(canceller.cancelled_owned())
+            .shutdown_timeout(shared.config().shutdown_timeout_sec())
             .workers(workers_count);
 
         let server = if tls.enabled() {
@@ -273,9 +274,41 @@ where
         let handler = server.handle();
         let mut resetter = resetter.subscribe();
         tokio::spawn(async move {
-            if resetter.recv().await.is_ok() {
-                info!(proxy = P::name(), "Reset signal received, stopping http-proxy...");
-                handler.stop(true).await;
+            loop {
+                match resetter.recv().await {
+                    Err(broadcast::error::RecvError::Lagged(lag)) => {
+                        warn!(
+                            proxy = P::name(),
+                            lag = lag,
+                            "Resetter channel is lagging behind, attempting to exhaust it..."
+                        );
+                        continue;
+                    }
+
+                    Err(broadcast::error::RecvError::Closed) => {
+                        info!(
+                            proxy = P::name(),
+                            "Resetter channel is closed, stopping http-proxy..."
+                        );
+                    }
+
+                    Ok(()) => {
+                        info!(proxy = P::name(), "Reset signal received, stopping http-proxy...");
+                    }
+                }
+
+                if let Err(err) =
+                    tokio::time::timeout(Duration::from_millis(60_000), handler.stop(true)).await
+                {
+                    error!(
+                        proxy = P::name(),
+                        error = ?err,
+                        "Graceful shutdown of http-proxy failed after 1 minute, forcefully shutting down..."
+                    );
+                    std::process::exit(1);
+                }
+
+                break;
             }
         });
 

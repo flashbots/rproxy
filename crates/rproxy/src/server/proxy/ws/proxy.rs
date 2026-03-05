@@ -137,6 +137,7 @@ where
         let client_connections_count = shared.client_connections_count.clone();
         let worker_canceller = canceller.clone();
         let worker_resetter = resetter.clone();
+        let shutdown_timeout_sec = shared.config().shutdown_timeout_sec();
 
         info!(
             proxy = P::name(),
@@ -165,6 +166,7 @@ where
             config.keepalive_interval(),
         ))
         .shutdown_signal(canceller.cancelled_owned())
+        .shutdown_timeout(shutdown_timeout_sec)
         .workers(workers_count);
 
         let proxy = match if tls.enabled() {
@@ -192,9 +194,44 @@ where
         let handler = proxy.handle();
         let mut resetter = resetter.subscribe();
         tokio::spawn(async move {
-            if resetter.recv().await.is_ok() {
-                info!(proxy = P::name(), "Reset signal received, stopping websocket-proxy...");
-                handler.stop(true).await;
+            loop {
+                match resetter.recv().await {
+                    Err(broadcast::error::RecvError::Lagged(lag)) => {
+                        warn!(
+                            proxy = P::name(),
+                            lag = lag,
+                            "Resetter channel is lagging behind, attempting to exhaust it..."
+                        );
+                        continue;
+                    }
+
+                    Err(broadcast::error::RecvError::Closed) => {
+                        info!(
+                            proxy = P::name(),
+                            "Resetter channel is closed, stopping websocket-proxy..."
+                        );
+                    }
+
+                    Ok(()) => {
+                        info!(
+                            proxy = P::name(),
+                            "Reset signal received, stopping websocket-proxy..."
+                        );
+                    }
+                }
+
+                if let Err(err) =
+                    tokio::time::timeout(Duration::from_millis(60_000), handler.stop(true)).await
+                {
+                    error!(
+                        proxy = P::name(),
+                        error = ?err,
+                        "Graceful shutdown of websocket-proxy failed after 1 minute, forcefully shutting down..."
+                    );
+                    std::process::exit(1);
+                }
+
+                break;
             }
         });
 
@@ -701,17 +738,42 @@ where
                         break;
                     }
 
-                    _ = resetter.recv() => {
-                        break;
+                    reset = resetter.recv() => {
+                        match reset {
+                            Err(broadcast::error::RecvError::Lagged(lag)) => {
+                                warn!(
+                                    proxy = P::name(),
+                                    connection_id = %self.info.conn_id(),
+                                    worker_id = %self.worker_id,
+                                    lag = lag,
+                                    "Resetter channel is lagging behind, attempting to exhaust it..."
+                                );
+                                continue;
+                            }
+
+                            Err(broadcast::error::RecvError::Closed) => {
+                                info!(
+                                    proxy = P::name(),
+                                    connection_id = %self.info.conn_id(),
+                                    worker_id = %self.worker_id,
+                                    "Resetter channel is closed, stopping websocket-proxy..."
+                                );
+                                break;
+                            }
+
+                            Ok(()) => {
+                                info!(proxy = P::name(), "Reset signal received, stopping websocket-proxy...");
+                                break;
+                            }
+                        }
                     }
 
                     // client => backend
                     clnt_msg = self.clnt_rx.next() => {
                         pumping = self.pump_clnt_to_bknd(UtcDateTime::now(), clnt_msg).await;
+                        continue;
                     }
                 }
-
-                continue;
             }
 
             tokio::select! {
@@ -719,8 +781,34 @@ where
                     break;
                 }
 
-                _ = resetter.recv() => {
-                    break;
+                reset = resetter.recv() => {
+                    match reset {
+                        Err(broadcast::error::RecvError::Lagged(lag)) => {
+                            warn!(
+                                proxy = P::name(),
+                                connection_id = %self.info.conn_id(),
+                                worker_id = %self.worker_id,
+                                lag = lag,
+                                "Resetter channel is lagging behind, attempting to exhaust it..."
+                            );
+                            continue;
+                        }
+
+                        Err(broadcast::error::RecvError::Closed) => {
+                            info!(
+                                proxy = P::name(),
+                                connection_id = %self.info.conn_id(),
+                                worker_id = %self.worker_id,
+                                "Resetter channel is closed, stopping websocket-proxy..."
+                            );
+                            break;
+                        }
+
+                        Ok(()) => {
+                            info!(proxy = P::name(), "Reset signal received, stopping websocket-proxy...");
+                            break;
+                        }
+                    }
                 }
 
                 // ping both sides

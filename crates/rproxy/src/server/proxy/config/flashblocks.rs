@@ -108,6 +108,17 @@ pub(crate) struct ConfigFlashblocks {
     )]
     pub(crate) log_sanitise: bool,
 
+    /// timeout for graceful shutdown of flashblocks workers
+    #[arg(
+        default_value = "5",
+        env = "RPROXY_FLASHBLOCKS_SHUTDOWN_TIMEOUT_SEC",
+        help_heading = "flashblocks",
+        long("flashblocks-shutdown-timeout-sec"),
+        name("flashblocks_shutdown_timeout_sec"),
+        value_name = "seconds"
+    )]
+    pub(crate) shutdown_timeout_sec: u64,
+
     /// the chance (between 0.0 and 1.0) that pings received from
     /// flashblocks backend would be ignored (no pong sent)
     #[arg(
@@ -266,6 +277,11 @@ impl ConfigProxyWs for ConfigFlashblocks {
     #[inline]
     fn log_sanitise(&self) -> bool {
         self.log_sanitise
+    }
+
+    #[inline]
+    fn shutdown_timeout_sec(&self) -> u64 {
+        self.shutdown_timeout_sec
     }
 
     #[inline]

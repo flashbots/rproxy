@@ -23,6 +23,7 @@ pub(crate) trait ConfigProxyHttp: Clone + Send + Unpin + 'static {
     fn mirroring_strategy(&self) -> &ConfigProxyHttpMirroringStrategy;
     fn prealloacated_request_buffer_size(&self) -> usize;
     fn prealloacated_response_buffer_size(&self) -> usize;
+    fn shutdown_timeout_sec(&self) -> u64;
 }
 
 // ConfigProxyHttpMirroringStrategy ------------------------------------

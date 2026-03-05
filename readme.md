@@ -88,7 +88,13 @@ authrpc:
           interval between tcp keepalive packets on authrpc connections
 
           [env: RPROXY_AUTHRPC_KEEPALIVE_INTERVAL=]
-          [default: 5s]
+          [default: 75s]
+
+      --authrpc-keepalive-retries <count>
+          maximum number of keepalive probes to send before dropping authrpc connection
+
+          [env: RPROXY_AUTHRPC_KEEPALIVE_RETRIES=]
+          [default: 8]
 
       --authrpc-listen-address <socket>
           host:port for authrpc proxy
@@ -165,6 +171,12 @@ authrpc:
 
           [env: RPROXY_AUTHRPC_REMOVE_BACKEND_FROM_MIRRORING_PEERS=]
 
+      --authrpc-shutdown-timeout-sec <seconds>
+          timeout for graceful shutdown of authrpc workers
+
+          [env: RPROXY_AUTHRPC_SHUTDOWN_TIMEOUT_SEC=]
+          [default: 5]
+
 circuit-breaker:
       --circuit-breaker-reset-continuously
           reset proxies continuously at each poll interval as long as circuit-breaker url
@@ -218,7 +230,14 @@ flashblocks:
           interval between tcp keepalive packets on flashblocks connections
 
           [env: RPROXY_FLASHBLOCKS_KEEPALIVE_INTERVAL=]
-          [default: 5s]
+          [default: 75s]
+
+      --flashblocks-keepalive-retries <count>
+          maximum number of keepalive probes to send before dropping flashblocks
+          connection
+
+          [env: RPROXY_FLASHBLOCKS_KEEPALIVE_RETRIES=]
+          [default: 8]
 
       --flashblocks-listen-address <socket>
           host:port for flashblocks proxy
@@ -240,6 +259,12 @@ flashblocks:
           sanitise logs of proxied flashblocks messages (e.g. don't log raw transactions)
 
           [env: RPROXY_FLASHBLOCKS_LOG_SANITISE=]
+
+      --flashblocks-shutdown-timeout-sec <seconds>
+          timeout for graceful shutdown of flashblocks workers
+
+          [env: RPROXY_FLASHBLOCKS_SHUTDOWN_TIMEOUT_SEC=]
+          [default: 5]
 
 log:
       --log-format <format>
@@ -296,7 +321,13 @@ rpc:
           interval between tcp keepalive packets on rpc connections
 
           [env: RPROXY_RPC_KEEPALIVE_INTERVAL=]
-          [default: 5s]
+          [default: 75s]
+
+      --rpc-keepalive-retries <count>
+          maximum number of keepalive probes to send before dropping rpc connection
+
+          [env: RPROXY_RPC_KEEPALIVE_RETRIES=]
+          [default: 8]
 
       --rpc-listen-address <socket>
           host:port for rpc proxy
@@ -378,6 +409,12 @@ rpc:
           remove rpc backend from peers
 
           [env: RPROXY_RPC_REMOVE_BACKEND_FROM_MIRRORING_PEERS=]
+
+      --rpc-shutdown-timeout-sec <seconds>
+          timeout for graceful shutdown of rpc workers
+
+          [env: RPROXY_RPC_SHUTDOWN_TIMEOUT_SEC=]
+          [default: 5]
 
 tls:
       --tls-certificate <path>
