@@ -42,7 +42,7 @@ use futures_core::Stream;
 use pin_project::pin_project;
 use scc::HashMap;
 use time::{UtcDateTime, format_description::well_known::Iso8601};
-use tokio::sync::broadcast;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 use url::Url;
 use uuid::Uuid;
@@ -142,8 +142,8 @@ where
         config: C,
         tls: ConfigTls,
         metrics: Arc<Metrics>,
-        canceller: tokio_util::sync::CancellationToken,
-        resetter: broadcast::Sender<()>,
+        shutdown_signal: CancellationToken,
+        reset_signal: CancellationToken,
     ) -> Result<(), Box<dyn std::error::Error + Send>> {
         let listen_address = config.listen_address();
 
@@ -187,7 +187,7 @@ where
         );
 
         let server = actix_server::Server::build()
-            .shutdown_signal(canceller.cancelled_owned())
+            .shutdown_signal(shutdown_signal.cancelled_owned())
             .shutdown_timeout(shared.config().shutdown_timeout_sec())
             .workers(workers_count);
 
@@ -272,43 +272,20 @@ where
         let server = server.run();
 
         let handler = server.handle();
-        let mut resetter = resetter.subscribe();
         tokio::spawn(async move {
-            loop {
-                match resetter.recv().await {
-                    Err(broadcast::error::RecvError::Lagged(lag)) => {
-                        warn!(
-                            proxy = P::name(),
-                            lag = lag,
-                            "Resetter channel is lagging behind, attempting to exhaust it..."
-                        );
-                        continue;
-                    }
+            reset_signal.cancelled().await;
 
-                    Err(broadcast::error::RecvError::Closed) => {
-                        info!(
-                            proxy = P::name(),
-                            "Resetter channel is closed, stopping http-proxy..."
-                        );
-                    }
+            info!(proxy = P::name(), "Reset signal received, stopping http-proxy...");
 
-                    Ok(()) => {
-                        info!(proxy = P::name(), "Reset signal received, stopping http-proxy...");
-                    }
-                }
-
-                if let Err(err) =
-                    tokio::time::timeout(Duration::from_millis(60_000), handler.stop(true)).await
-                {
-                    error!(
-                        proxy = P::name(),
-                        error = ?err,
-                        "Graceful shutdown of http-proxy failed after 1 minute, forcefully shutting down..."
-                    );
-                    std::process::exit(1);
-                }
-
-                break;
+            if let Err(err) =
+                tokio::time::timeout(Duration::from_millis(60_000), handler.stop(true)).await
+            {
+                error!(
+                    proxy = P::name(),
+                    error = ?err,
+                    "Graceful shutdown of http-proxy failed after 1 minute, forcefully shutting down..."
+                );
+                std::process::exit(1);
             }
         });
 

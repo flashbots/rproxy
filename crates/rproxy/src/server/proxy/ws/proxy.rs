@@ -29,8 +29,9 @@ use futures::{
 use prometheus_client::metrics::gauge::Atomic;
 use scc::HashMap;
 use time::{UtcDateTime, format_description::well_known::Iso8601};
-use tokio::{net::TcpStream, sync::broadcast};
+use tokio::net::TcpStream;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 use x509_parser::asn1_rs::ToStatic;
@@ -72,8 +73,8 @@ where
 
     shared: ProxyWsSharedState<C, P>,
     postprocessor: actix::Addr<ProxyWsPostprocessor<C, P>>,
-    canceller: tokio_util::sync::CancellationToken,
-    resetter: broadcast::Sender<()>,
+    shutdown_signal: CancellationToken,
+    reset_signal: CancellationToken,
 
     backend: ProxyWsBackendEndpoint<C, P>,
 }
@@ -85,8 +86,8 @@ where
 {
     fn new(
         shared: ProxyWsSharedState<C, P>,
-        canceller: tokio_util::sync::CancellationToken,
-        resetter: broadcast::Sender<()>,
+        shutdown_signal: CancellationToken,
+        reset_signal: CancellationToken,
     ) -> Self {
         let id = Uuid::now_v7();
 
@@ -102,7 +103,7 @@ where
         }
         .start();
 
-        Self { id, shared, postprocessor, canceller, resetter, backend }
+        Self { id, shared, postprocessor, shutdown_signal, reset_signal, backend }
     }
 
     fn config(&self) -> &C {
@@ -113,8 +114,8 @@ where
         config: C,
         tls: ConfigTls,
         metrics: Arc<Metrics>,
-        canceller: tokio_util::sync::CancellationToken,
-        resetter: broadcast::Sender<()>,
+        shutdown_signal: CancellationToken,
+        reset_signal: CancellationToken,
     ) -> Result<(), Box<dyn std::error::Error + Send>> {
         let listen_address = config.listen_address();
 
@@ -135,8 +136,8 @@ where
 
         let shared = ProxyWsSharedState::<C, P>::new(config.clone(), &metrics);
         let client_connections_count = shared.client_connections_count.clone();
-        let worker_canceller = canceller.clone();
-        let worker_resetter = resetter.clone();
+        let worker_shutdown_signal = shutdown_signal.clone();
+        let worker_reset_signal = reset_signal.clone();
         let shutdown_timeout_sec = shared.config().shutdown_timeout_sec();
 
         info!(
@@ -149,8 +150,8 @@ where
         let server = HttpServer::new(move || {
             let this = web::Data::new(Self::new(
                 shared.clone(),
-                worker_canceller.clone(),
-                worker_resetter.clone(),
+                worker_shutdown_signal.clone(),
+                worker_reset_signal.clone(),
             ));
 
             App::new()
@@ -165,7 +166,7 @@ where
             client_connections_count,
             config.keepalive_interval(),
         ))
-        .shutdown_signal(canceller.cancelled_owned())
+        .shutdown_signal(shutdown_signal.cancelled_owned())
         .shutdown_timeout(shutdown_timeout_sec)
         .workers(workers_count);
 
@@ -192,46 +193,20 @@ where
         .run();
 
         let handler = proxy.handle();
-        let mut resetter = resetter.subscribe();
         tokio::spawn(async move {
-            loop {
-                match resetter.recv().await {
-                    Err(broadcast::error::RecvError::Lagged(lag)) => {
-                        warn!(
-                            proxy = P::name(),
-                            lag = lag,
-                            "Resetter channel is lagging behind, attempting to exhaust it..."
-                        );
-                        continue;
-                    }
+            reset_signal.cancelled().await;
 
-                    Err(broadcast::error::RecvError::Closed) => {
-                        info!(
-                            proxy = P::name(),
-                            "Resetter channel is closed, stopping websocket-proxy..."
-                        );
-                    }
+            info!(proxy = P::name(), "Reset signal received, stopping websocket-proxy...");
 
-                    Ok(()) => {
-                        info!(
-                            proxy = P::name(),
-                            "Reset signal received, stopping websocket-proxy..."
-                        );
-                    }
-                }
-
-                if let Err(err) =
-                    tokio::time::timeout(Duration::from_millis(60_000), handler.stop(true)).await
-                {
-                    error!(
-                        proxy = P::name(),
-                        error = ?err,
-                        "Graceful shutdown of websocket-proxy failed after 1 minute, forcefully shutting down..."
-                    );
-                    std::process::exit(1);
-                }
-
-                break;
+            if let Err(err) =
+                tokio::time::timeout(Duration::from_millis(60_000), handler.stop(true)).await
+            {
+                error!(
+                    proxy = P::name(),
+                    error = ?err,
+                    "Graceful shutdown of websocket-proxy failed after 1 minute, forcefully shutting down..."
+                );
+                std::process::exit(1);
             }
         });
 
@@ -405,8 +380,8 @@ where
             worker_id: this.id,
             shared: this.shared.clone(),
             postprocessor: this.postprocessor.clone(),
-            canceller: this.canceller.clone(),
-            resetter: this.resetter.clone(),
+            shutdown_signal: this.shutdown_signal.clone(),
+            reset_signal: this.reset_signal.clone(),
             clnt_tx,
             clnt_rx,
             bknd_tx: Some(bknd_tx),
@@ -694,8 +669,8 @@ where
 
     shared: ProxyWsSharedState<C, P>,
     postprocessor: actix::Addr<ProxyWsPostprocessor<C, P>>,
-    canceller: tokio_util::sync::CancellationToken,
-    resetter: broadcast::Sender<()>,
+    shutdown_signal: CancellationToken,
+    reset_signal: CancellationToken,
 
     clnt_tx: Session,
     clnt_rx: MessageStream,
@@ -728,45 +703,21 @@ where
 
         let mut pumping: Result<(), &str> = Ok(());
 
-        let mut resetter = self.resetter.subscribe();
-
-        while pumping.is_ok() && !self.canceller.is_cancelled() && !resetter.is_closed() {
+        while pumping.is_ok() &&
+            !self.shutdown_signal.is_cancelled() &&
+            !self.reset_signal.is_cancelled()
+        {
             #[cfg(feature = "chaos")]
             if self.chaos.stream_is_blocked.load(Ordering::Relaxed) {
                 tokio::select! {
-                    _ = self.canceller.cancelled() => {
+                    _ = self.shutdown_signal.cancelled() => {
                         break;
                     }
 
-                    reset = resetter.recv() => {
-                        match reset {
-                            Err(broadcast::error::RecvError::Lagged(lag)) => {
-                                warn!(
-                                    proxy = P::name(),
-                                    connection_id = %self.info.conn_id(),
-                                    worker_id = %self.worker_id,
-                                    lag = lag,
-                                    "Resetter channel is lagging behind, attempting to exhaust it..."
-                                );
-                                continue;
-                            }
-
-                            Err(broadcast::error::RecvError::Closed) => {
-                                info!(
-                                    proxy = P::name(),
-                                    connection_id = %self.info.conn_id(),
-                                    worker_id = %self.worker_id,
-                                    "Resetter channel is closed, stopping websocket-proxy..."
-                                );
-                                break;
-                            }
-
-                            Ok(()) => {
-                                info!(proxy = P::name(), "Reset signal received, stopping websocket-proxy...");
-                                break;
-                            }
-                        }
-                    }
+                    _ = self.reset_signal.cancelled() => {
+                        info!(proxy = P::name(), "Reset signal received, stopping websocket-proxy...");
+                        break;
+                    },
 
                     // client => backend
                     clnt_msg = self.clnt_rx.next() => {
@@ -777,39 +728,14 @@ where
             }
 
             tokio::select! {
-                _ = self.canceller.cancelled() => {
+                _ = self.shutdown_signal.cancelled() => {
                     break;
                 }
 
-                reset = resetter.recv() => {
-                    match reset {
-                        Err(broadcast::error::RecvError::Lagged(lag)) => {
-                            warn!(
-                                proxy = P::name(),
-                                connection_id = %self.info.conn_id(),
-                                worker_id = %self.worker_id,
-                                lag = lag,
-                                "Resetter channel is lagging behind, attempting to exhaust it..."
-                            );
-                            continue;
-                        }
-
-                        Err(broadcast::error::RecvError::Closed) => {
-                            info!(
-                                proxy = P::name(),
-                                connection_id = %self.info.conn_id(),
-                                worker_id = %self.worker_id,
-                                "Resetter channel is closed, stopping websocket-proxy..."
-                            );
-                            break;
-                        }
-
-                        Ok(()) => {
-                            info!(proxy = P::name(), "Reset signal received, stopping websocket-proxy...");
-                            break;
-                        }
-                    }
-                }
+                _ = self.reset_signal.cancelled() => {
+                    info!(proxy = P::name(), "Reset signal received, stopping websocket-proxy...");
+                    break;
+                },
 
                 // ping both sides
                 _ = heartbeat.tick() => {
