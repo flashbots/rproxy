@@ -1,0 +1,46 @@
+[package]
+name = "atls"
+version = "0.0.1"
+edition = "2024"
+
+[lints]
+workspace = true
+
+[features]
+default = []
+
+actix = [
+    "actix-http",
+    "actix-rt",
+    "actix-service",
+    "actix-tls",
+    "actix-tls/uri",
+    "actix-utils",
+]
+
+[dependencies]
+actix-http = { workspace = true, optional = true }
+actix-rt = { workspace = true, optional = true }
+actix-service = { workspace = true, optional = true }
+actix-tls = { workspace = true, optional = true }
+actix-utils = { workspace = true, optional = true }
+attested-tls-proxy = { git = "https://github.com/flashbots/attested-tls-proxy.git", rev = "30c36401102b9474f6168e965eb0b5dc25a378cd", default-features = false }
+awc = { workspace = true, optional = true }
+bcder = "0.7.6"
+bytes = "1.11.1"
+http.workspace = true
+impl-more = "0.3.1"
+parking_lot = "0.12.5"
+pin-project-lite = "0.2.16"
+rcgen.workspace = true
+rustls.workspace = true
+scc = "3.5.5"
+signature = "2.2.0"
+thiserror = "2.0.18"
+time = "0.3.46"
+tokio-rustls.workspace = true
+tokio.workspace = true
+tracing = "0.1.44"
+webpki-roots = "1.0.6"
+x509-certificate = "0.25.0"
+hex = "0.4.3"

@@ -298,10 +298,7 @@ impl ConfigRpc {
             }
         }
 
-        match errs.len() {
-            0 => None,
-            _ => Some(errs),
-        }
+        (!errs.is_empty()).then_some(errs)
     }
 
     pub(crate) fn preprocess(&mut self) {
@@ -465,6 +462,11 @@ impl ConfigProxyHttp for ConfigRpc {
     #[inline]
     fn shutdown_timeout_sec(&self) -> u64 {
         self.shutdown_timeout_sec
+    }
+
+    #[inline]
+    fn tls_enabled(&self) -> bool {
+        matches!(self.backend_url().scheme().to_lowercase().as_str(), "https" | "atls")
     }
 }
 

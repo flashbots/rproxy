@@ -106,10 +106,7 @@ impl ConfigCircuitBreaker {
             }
         }
 
-        match errs.len() {
-            0 => None,
-            _ => Some(errs),
-        }
+        (!errs.is_empty()).then_some(errs)
     }
 }
 

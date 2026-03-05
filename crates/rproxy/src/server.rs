@@ -80,7 +80,7 @@ impl Server {
                         error = ?err,
                         "Failed to start metrics service",
                     );
-                    std::process::exit(-1);
+                    std::process::exit(1);
                 })
             });
         }
@@ -95,7 +95,7 @@ impl Server {
                     Ok(rt) => rt,
                     Err(err) => {
                         error!(error = ?err, "Failed to initialise a single-threaded runtime for circuit-breaker");
-                        std::process::exit(-1);
+                        std::process::exit(1);
                     }
                 };
 
@@ -107,10 +107,10 @@ impl Server {
         }
 
         while !canceller.is_cancelled() {
-            if config.tls.enabled() {
+            if config.tls.tls_enabled() {
                 let metrics = metrics.clone();
                 let (not_before, not_after) =
-                    tls_certificate_validity_timestamps(config.tls.certificate());
+                    tls_certificate_validity_timestamps(config.tls.tls_certificate());
                 metrics.tls_certificate_valid_not_before.set(not_before);
                 metrics.tls_certificate_valid_not_after.set(not_after);
             }

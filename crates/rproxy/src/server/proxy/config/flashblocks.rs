@@ -231,10 +231,7 @@ impl ConfigFlashblocks {
             }
         }
 
-        match errs.len() {
-            0 => None,
-            _ => Some(errs),
-        }
+        (!errs.is_empty()).then_some(errs)
     }
 }
 
@@ -301,6 +298,11 @@ impl ConfigProxyWs for ConfigFlashblocks {
     fn chaos_probability_stream_blocked(&self) -> f64 {
         self.chaos_probability_stream_blocked
     }
+
+    #[inline]
+    fn tls_enabled(&self) -> bool {
+        matches!(self.backend_url().scheme_str().unwrap_or_default(), "wss" | "awss")
+    }
 }
 
 // ConfigFlashblocksError ----------------------------------------------
@@ -316,21 +318,21 @@ pub(crate) enum ConfigFlashblocksError {
     #[error("invalid flashblocks proxy listen address '{addr}': {err}")]
     ListenAddressInvalid { addr: String, err: std::net::AddrParseError },
 
+    #[cfg(feature = "chaos")]
     #[error(
         "invalid flashblocks backend ping ignore probability (must be within [0.0 .. 1.0]: {probability}"
     )]
-    #[cfg(feature = "chaos")]
     ChaosProbabilityFlashblocksBackendPingIgnoredInvalid { probability: f64 },
 
+    #[cfg(feature = "chaos")]
     #[error(
         "invalid flashblocks client ping ignore probability (must be within [0.0 .. 1.0]: {probability}"
     )]
-    #[cfg(feature = "chaos")]
     ChaosProbabilityFlashblocksClientPingIgnoredInvalid { probability: f64 },
 
+    #[cfg(feature = "chaos")]
     #[error(
         "invalid flashblocks stream block probability (must be within [0.0 .. 1.0]: {probability}"
     )]
-    #[cfg(feature = "chaos")]
     ChaosProbabilityFlashblocksStreamBlockedInvalid { probability: f64 },
 }

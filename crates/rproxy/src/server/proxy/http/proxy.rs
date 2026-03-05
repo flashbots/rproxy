@@ -15,6 +15,7 @@ use std::{
 };
 
 use actix::{Actor, AsyncContext, WrapFuture};
+use actix_service::ServiceFactoryExt;
 use actix_web::{
     self,
     App,
@@ -26,6 +27,10 @@ use actix_web::{
     http::{StatusCode, header},
     middleware::{NormalizePath, TrailingSlash},
     web,
+};
+use atls::{
+    client::ActixNestingAttestedTlsConnectorService,
+    server::{ActixNestingAttestedTlsAcceptor, ActixNestingTlsStream, NestingAttestedTlsServer},
 };
 use awc::{
     Client,
@@ -191,12 +196,18 @@ where
             .shutdown_timeout(shared.config().shutdown_timeout_sec())
             .workers(workers_count);
 
-        let server = if tls.enabled() {
-            server.listen(P::name(), listener, move || {
-                let config = shared.config();
+        // helper macro to create http streams with different inferred types
+        macro_rules! http_stream {
+            (
+                $shared:ident,
+                $max_concurrent_requests_per_worker:ident,
+                $client_connections_count:ident,
+                $metrics:ident
+            ) => {{
+                let config = $shared.config();
 
                 let this =
-                    web::Data::new(Self::new(shared.clone(), max_concurrent_requests_per_worker));
+                    web::Data::new(Self::new($shared.clone(), $max_concurrent_requests_per_worker));
 
                 let app = App::new()
                     .app_data(this)
@@ -205,54 +216,81 @@ where
 
                 let on_connect = ConnectionGuard::on_connect(
                     P::name(),
-                    metrics.clone(),
-                    client_connections_count.clone(),
+                    $metrics.clone(),
+                    $client_connections_count.clone(),
                     config.keepalive_interval(),
                 );
 
-                let h1 = actix_http::HttpService::build()
+                actix_http::HttpService::build()
                     .client_disconnect_timeout(Duration::from_millis(1000)) // same as in HttpServer
                     .keep_alive(config.keepalive_interval())
                     .on_connect_ext(move |io: &_, ext: _| {
                         (on_connect)(io as &dyn std::any::Any, ext)
                     })
-                    .h1(actix_service::map_config(app, |_| AppConfig::default()));
+                    .h1(actix_service::map_config(app, |_| AppConfig::default()))
+            }};
+        }
 
-                let cert = tls.certificate().clone();
-                let key = tls.key().clone_key();
+        let server = if !tls.tls_enabled() {
+            // plain http
+            server.listen(P::name(), listener, move || {
+                let h1 = http_stream!(
+                    shared,
+                    max_concurrent_requests_per_worker,
+                    client_connections_count,
+                    metrics
+                );
+
+                h1.tcp()
+            })
+        } else if !tls.atls_enabled() {
+            // tls
+            server.listen(P::name(), listener, move || {
+                let h1 = http_stream!(
+                    shared,
+                    max_concurrent_requests_per_worker,
+                    client_connections_count,
+                    metrics
+                );
+
+                let cert = tls.tls_certificate().clone();
+                let key = tls.tls_key().clone_key();
                 let tls_config = rustls::ServerConfig::builder()
                     .with_no_client_auth()
                     .with_single_cert(cert, key)
                     .unwrap(); // safety: verified on start
+
                 h1.rustls_0_23(tls_config)
             })
         } else {
+            // atls
+            let atls = NestingAttestedTlsServer::new(
+                tls.tls_key(),
+                tls.tls_certificate(),
+                tls.atls_key(),
+                atls::server::AttestationGenerator::with_no_attestation(), // TODO: use real stuff
+                atls::server::AttestationVerifier::expect_none(),          // TODO: use real stuff
+            )
+            .unwrap(); // safety: verified on start
+
             server.listen(P::name(), listener, move || {
-                let config = shared.config();
-
-                let this =
-                    web::Data::new(Self::new(shared.clone(), max_concurrent_requests_per_worker));
-
-                let app = App::new()
-                    .app_data(this)
-                    .wrap(NormalizePath::new(TrailingSlash::Trim))
-                    .default_service(web::route().to(Self::receive));
-
-                let on_connect = ConnectionGuard::on_connect(
-                    P::name(),
-                    metrics.clone(),
-                    client_connections_count.clone(),
-                    config.keepalive_interval(),
+                let h1 = http_stream!(
+                    shared,
+                    max_concurrent_requests_per_worker,
+                    client_connections_count,
+                    metrics
                 );
 
-                let h1 = actix_http::HttpService::build()
-                    .client_disconnect_timeout(Duration::from_millis(1000)) // same as in HttpServer
-                    .keep_alive(config.keepalive_interval())
-                    .on_connect_ext(move |io: &_, ext: _| {
-                        (on_connect)(io as &dyn std::any::Any, ext)
+                ActixNestingAttestedTlsAcceptor::new(atls.clone())
+                    .map_init_err(|_| {
+                        unreachable!("TLS acceptor service factory does not error on init")
                     })
-                    .h1(actix_service::map_config(app, |_| AppConfig::default()));
-                h1.tcp()
+                    .map_err(actix_tls::accept::TlsError::into_service_error)
+                    .map(|io: ActixNestingTlsStream<tokio::net::TcpStream>| {
+                        let peer_addr = io.get_ref().0.get_ref().0.peer_addr().ok();
+                        (io, peer_addr)
+                    })
+                    .and_then(h1.map_err(actix_tls::accept::TlsError::Service))
             })
         };
 
@@ -1334,7 +1372,7 @@ where
         inner: Arc<P>,
         worker_id: Uuid,
         metrics: Arc<Metrics>,
-        url: Url,
+        mut url: Url,
         connections_limit: usize,
         timeout: std::time::Duration,
     ) -> Self {
@@ -1353,11 +1391,27 @@ where
             .unwrap() // safety: verified on start
             .to_string();
 
-        let client = Client::builder()
-            .add_default_header((header::HOST, host))
-            .connector(Connector::new().conn_keep_alive(2 * timeout).limit(connections_limit))
-            .timeout(timeout)
-            .finish();
+        let atls_enabled = url.scheme().to_string().to_lowercase() == "atls";
+        if atls_enabled &&
+            let Ok(new_url) = Url::parse(&url.as_str().replacen("atls://", "http://", 1))
+        {
+            url = new_url;
+        }
+
+        let client = Client::builder().add_default_header((header::HOST, host)).timeout(timeout);
+        let connector = Connector::new().conn_keep_alive(2 * timeout);
+
+        let client = if atls_enabled {
+            let atls = ActixNestingAttestedTlsConnectorService::new(
+                atls::client::AttestationGenerator::with_no_attestation(), // TODO: use real stuff
+                atls::client::AttestationVerifier::expect_none(),          // TODO: use real stuff
+            )
+            .unwrap(); // TODO: verify on start
+
+            client.connector(connector.connector(atls)).finish()
+        } else {
+            client.connector(connector).finish()
+        };
 
         Self { inner, worker_id, metrics, client, url, _config: PhantomData }
     }

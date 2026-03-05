@@ -14,6 +14,7 @@ pub(crate) trait ConfigProxyWs: Clone + Send + Unpin + 'static {
     fn log_client_messages(&self) -> bool;
     fn log_sanitise(&self) -> bool;
     fn shutdown_timeout_sec(&self) -> u64;
+    fn tls_enabled(&self) -> bool;
 
     #[cfg(feature = "chaos")]
     fn chaos_probability_backend_ping_ignored(&self) -> f64;
