@@ -6,7 +6,7 @@ use thiserror::Error;
 use x509_parser::asn1_rs::ToStatic;
 
 use crate::server::{
-    config::{ConfigLogging, ConfigLoggingError, ConfigMetrics, ConfigMetricsError},
+    config::{ConfigLogging, ConfigMetrics, ConfigMetricsError},
     proxy::config::{
         ConfigAuthrpc,
         ConfigAuthrpcError,
@@ -161,11 +161,6 @@ impl Config {
             errs.append(&mut _errs.into_iter().map(|err| err.into()).collect());
         }
 
-        // logging
-        if let Some(_errs) = self.logging.validate() {
-            errs.append(&mut _errs.into_iter().map(|err| err.into()).collect());
-        }
-
         // metrics
         if let Some(_errs) = self.metrics.validate() {
             errs.append(&mut _errs.into_iter().map(|err| err.into()).collect());
@@ -214,9 +209,6 @@ pub(crate) enum ConfigError {
     #[error("invalid flashblocks proxy configuration: {0}")]
     ConfigFlashblocksInvalid(ConfigFlashblocksError),
 
-    #[error("invalid logging configuration: {0}")]
-    ConfigLoggingInvalid(ConfigLoggingError),
-
     #[error("invalid metrics configuration: {0}")]
     ConfigMetricsInvalid(ConfigMetricsError),
 
@@ -245,12 +237,6 @@ impl From<ConfigCircuitBreakerError> for ConfigError {
 impl From<ConfigFlashblocksError> for ConfigError {
     fn from(err: ConfigFlashblocksError) -> Self {
         Self::ConfigFlashblocksInvalid(err)
-    }
-}
-
-impl From<ConfigLoggingError> for ConfigError {
-    fn from(err: ConfigLoggingError) -> Self {
-        Self::ConfigLoggingInvalid(err)
     }
 }
 
