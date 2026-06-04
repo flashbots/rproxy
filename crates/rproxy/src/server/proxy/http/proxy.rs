@@ -1340,9 +1340,26 @@ where
             .unwrap() // safety: verified on start
             .to_string();
 
+        // Build the inner TCP connector ourselves so we can flip
+        // TCP_NODELAY on after each connect
+        use actix_service::ServiceExt as _;
+        let tcp_nodelay = actix_tls::connect::Connector::new(
+            actix_tls::connect::Resolver::default(),
+        )
+        .service()
+        .map(|conn: actix_tls::connect::Connection<awc::http::Uri, tokio::net::TcpStream>| {
+            let _ = conn.io_ref().set_nodelay(true);
+            conn
+        });
+
         let client = Client::builder()
             .add_default_header((header::HOST, host))
-            .connector(Connector::new().conn_keep_alive(2 * timeout).limit(connections_limit))
+            .connector(
+                Connector::new()
+                    .connector(tcp_nodelay)
+                    .conn_keep_alive(2 * timeout)
+                    .limit(connections_limit),
+            )
             .timeout(timeout)
             .finish();
 
