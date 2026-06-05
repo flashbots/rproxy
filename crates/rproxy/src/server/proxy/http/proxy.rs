@@ -40,6 +40,7 @@ use bytes::Bytes;
 use futures::TryStreamExt;
 use futures_core::Stream;
 use pin_project::pin_project;
+use prometheus_client::metrics::{counter::Counter, gauge::Gauge};
 use scc::HashMap;
 use time::{UtcDateTime, format_description::well_known::Iso8601};
 use tokio::sync::broadcast;
@@ -79,6 +80,13 @@ where
     backend: ProxyHttpBackendEndpoint<C, P>,
     requests: HashMap<Uuid, ProxiedHttpRequest>,
     postprocessor: actix::Addr<ProxyHttpPostprocessor<C, P>>,
+
+    // Per-worker cached metric handles. These are cheap to clone (each
+    // wraps an `Arc<AtomicU64>` internally) and bypass the per-request
+    // `Family::get_or_create` lookup on the hot path.
+    in_flight_client: Gauge,
+    in_flight_backend: Gauge,
+    proxy_failure_count: Counter,
 }
 
 impl<C, P> ProxyHttp<C, P>
@@ -135,7 +143,24 @@ where
         }
         .start();
 
-        Self { id, shared, backend, requests: HashMap::default(), postprocessor }
+        let labels_proxy = LabelsProxy { proxy: P::name() };
+        let in_flight_client =
+            shared.metrics.http_in_flight_requests_client.get_or_create(&labels_proxy).clone();
+        let in_flight_backend =
+            shared.metrics.http_in_flight_requests_backend.get_or_create(&labels_proxy).clone();
+        let proxy_failure_count =
+            shared.metrics.http_proxy_failure_count.get_or_create(&labels_proxy).clone();
+
+        Self {
+            id,
+            shared,
+            backend,
+            requests: HashMap::default(),
+            postprocessor,
+            in_flight_client,
+            in_flight_backend,
+            proxy_failure_count,
+        }
     }
 
     pub(crate) async fn run(
@@ -407,10 +432,8 @@ where
                 .inc();
         }
 
-        metrics
-            .http_in_flight_requests_client
-            .get_or_create(&LabelsProxy { proxy: P::name() })
-            .inc();
+        let in_flight_client = this.in_flight_client.clone();
+        in_flight_client.inc();
 
         let res = if this.shared.inner.might_intercept() {
             Self::send_to_backend_and_maybe_intercept(this, info, clnt_req_body, timestamp).await
@@ -418,10 +441,7 @@ where
             Self::stream_to_backend(this, info, clnt_req_body, timestamp).await
         };
 
-        metrics
-            .http_in_flight_requests_client
-            .get_or_create(&LabelsProxy { proxy: P::name() })
-            .dec();
+        in_flight_client.dec();
 
         res
     }
@@ -444,11 +464,7 @@ where
             timestamp,
         );
 
-        this.shared
-            .metrics
-            .http_in_flight_requests_backend
-            .get_or_create(&LabelsProxy { proxy: P::name() })
-            .inc();
+        this.in_flight_backend.inc();
 
         #[cfg(debug_assertions)]
         debug!(
@@ -477,16 +493,8 @@ where
                     error = ?err,
                     "Failed to proxy a request",
                 );
-                this.shared
-                    .metrics
-                    .http_in_flight_requests_backend
-                    .get_or_create(&LabelsProxy { proxy: P::name() })
-                    .dec();
-                this.shared
-                    .metrics
-                    .http_proxy_failure_count
-                    .get_or_create(&LabelsProxy { proxy: P::name() })
-                    .inc();
+                this.in_flight_backend.dec();
+                this.proxy_failure_count.inc();
                 return Ok(HttpResponse::BadGateway().body(format!("Backend error: {err:?}")));
             }
         };
@@ -503,11 +511,7 @@ where
             "Finished streaming http request to backend",
         );
 
-        this.shared
-            .metrics
-            .http_in_flight_requests_backend
-            .get_or_create(&LabelsProxy { proxy: P::name() })
-            .dec();
+        this.in_flight_backend.dec();
 
         Self::stream_to_client(this, req_id, conn_id, bknd_res)
     }
@@ -532,11 +536,7 @@ where
             "Sending http request to backend...",
         );
 
-        this.shared
-            .metrics
-            .http_in_flight_requests_backend
-            .get_or_create(&LabelsProxy { proxy: P::name() })
-            .inc();
+        this.in_flight_backend.inc();
 
         let body =
             match clnt_req_body.to_bytes_limited(this.shared.config().max_request_size()).await {
@@ -554,16 +554,8 @@ where
                         error = ?err,
                         "Failed to proxy a request",
                     );
-                    this.shared
-                        .metrics
-                        .http_in_flight_requests_backend
-                        .get_or_create(&LabelsProxy { proxy: P::name() })
-                        .dec();
-                    this.shared
-                        .metrics
-                        .http_proxy_failure_count
-                        .get_or_create(&LabelsProxy { proxy: P::name() })
-                        .inc();
+                    this.in_flight_backend.dec();
+                    this.proxy_failure_count.inc();
                     return Ok(HttpResponse::BadGateway().body(format!("Backend error: {err:?}")));
                 }
 
@@ -583,25 +575,13 @@ where
                         error = ?err,
                         "Failed to proxy a request",
                     );
-                    this.shared
-                        .metrics
-                        .http_in_flight_requests_backend
-                        .get_or_create(&LabelsProxy { proxy: P::name() })
-                        .dec();
-                    this.shared
-                        .metrics
-                        .http_proxy_failure_count
-                        .get_or_create(&LabelsProxy { proxy: P::name() })
-                        .inc();
+                    this.in_flight_backend.dec();
+                    this.proxy_failure_count.inc();
                     return Ok(HttpResponse::PayloadTooLarge().finish());
                 }
             };
 
-        this.shared
-            .metrics
-            .http_in_flight_requests_backend
-            .get_or_create(&LabelsProxy { proxy: P::name() })
-            .dec();
+        this.in_flight_backend.dec();
 
         #[cfg(debug_assertions)]
         debug!(
@@ -672,11 +652,7 @@ where
 
         let bknd_req = this.backend.new_backend_request(&req.info);
 
-        this.shared
-            .metrics
-            .http_in_flight_requests_backend
-            .get_or_create(&LabelsProxy { proxy: P::name() })
-            .inc();
+        this.in_flight_backend.inc();
 
         let bknd_res = match bknd_req.send_body(req.body.clone()).await {
             Ok(bknd_res) => bknd_res,
@@ -692,25 +668,13 @@ where
                     error = ?err,
                     "Failed to proxy a request",
                 );
-                this.shared
-                    .metrics
-                    .http_proxy_failure_count
-                    .get_or_create(&LabelsProxy { proxy: P::name() })
-                    .inc();
-                this.shared
-                    .metrics
-                    .http_in_flight_requests_backend
-                    .get_or_create(&LabelsProxy { proxy: P::name() })
-                    .dec();
+                this.proxy_failure_count.inc();
+                this.in_flight_backend.dec();
                 return Ok(HttpResponse::BadGateway().body(format!("Backend error: {err:?}")));
             }
         };
 
-        this.shared
-            .metrics
-            .http_in_flight_requests_backend
-            .get_or_create(&LabelsProxy { proxy: P::name() })
-            .dec();
+        this.in_flight_backend.dec();
 
         this.postprocess_client_request(req);
 
