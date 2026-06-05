@@ -5,7 +5,6 @@ use std::{
     mem,
     ops::Add,
     pin::Pin,
-    str::FromStr,
     sync::{
         Arc,
         atomic::{AtomicI64, AtomicUsize, Ordering},
@@ -389,13 +388,15 @@ where
     fn to_client_response<S>(bknd_res: &ClientResponse<S>) -> HttpResponseBuilder {
         let mut clnt_res = HttpResponse::build(bknd_res.status());
 
+        // The backend's `HeaderName` instances are already validated by the
+        // http parser, so we forward them verbatim without round-tripping
+        // through `HeaderName::from_str` (which was showing up as
+        // surprisingly hot on engine_* call patterns).
         for (hkey, hval) in bknd_res.headers().iter() {
             if is_hop_by_hop_header(hkey) {
                 continue;
             }
-            if let Ok(hkey) = header::HeaderName::from_str(hkey.as_str()) {
-                clnt_res.append_header((hkey, hval.clone()));
-            }
+            clnt_res.append_header((hkey.clone(), hval.clone()));
         }
 
         clnt_res
