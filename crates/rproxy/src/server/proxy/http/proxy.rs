@@ -1643,7 +1643,8 @@ where
 
     info: Option<ProxyHttpRequestInfo>,
     start: UtcDateTime,
-    body: Vec<u8>,
+    body: Vec<Bytes>,
+    body_len: usize,
     max_size: usize,
 
     #[pin]
@@ -1655,11 +1656,15 @@ where
     C: ConfigProxyHttp,
     P: ProxyHttpInner<C>,
 {
+    /// `_preallocate` is retained for API stability but is no longer used
+    /// to pre-size a flat buffer — chunks are now refcounted (`Bytes`)
+    /// and stored in a `Vec<Bytes>`, so there's no flat capacity to
+    /// reserve.
     fn new(
         proxy: web::Data<ProxyHttp<C, P>>,
         info: ProxyHttpRequestInfo,
         body: S,
-        preallocate: usize,
+        _preallocate: usize,
         timestamp: UtcDateTime,
     ) -> Self {
         let max_size = proxy.shared.config().max_request_size();
@@ -1668,7 +1673,8 @@ where
             info: Some(info),
             stream: body,
             start: timestamp,
-            body: Vec::with_capacity(preallocate),
+            body: Vec::new(),
+            body_len: 0,
             max_size,
         }
     }
@@ -1708,14 +1714,16 @@ where
                         thread_id = ?std::thread::current().id(),
                         latency_total = (UtcDateTime::now() - *this.start).as_seconds_f64(),
                         chunk_size = chunk.len(),
-                        total_size = this.body.len() + chunk.len(),
+                        total_size = *this.body_len + chunk.len(),
                         "Polled chunk of http request body",
                     );
                 }
-                if this.body.len() + chunk.len() > *this.max_size {
+                if *this.body_len + chunk.len() > *this.max_size {
                     return Poll::Ready(Some(Err(E::from(PayloadError::Overflow))));
                 }
-                this.body.extend_from_slice(&chunk);
+                // Refcount bump only — no memcpy of the chunk payload.
+                *this.body_len += chunk.len();
+                this.body.push(chunk.clone());
                 Poll::Ready(Some(Ok(chunk)))
             }
 
@@ -1737,7 +1745,7 @@ where
                         worker_id = %this.proxy.id,
                         thread_id = ?std::thread::current().id(),
                         latency_total = (UtcDateTime::now() - *this.start).as_seconds_f64(),
-                        total_size = this.body.len(),
+                        total_size = *this.body_len,
                         error = ?err,
                         "Error while polling http request body",
                     );
@@ -1763,13 +1771,14 @@ where
                         worker_id = %this.proxy.id,
                         thread_id = ?std::thread::current().id(),
                         latency_total = (UtcDateTime::now() - *this.start).as_seconds_f64(),
-                        total_size = this.body.len(),
+                        total_size = *this.body_len,
                         "Done polling http request body",
                     );
                 }
                 let end = UtcDateTime::now();
                 if let Some(info) = mem::take(this.info) {
-                    let req = ProxiedHttpRequest::new(info, mem::take(this.body), *this.start, end);
+                    let body = concat_bytes(mem::take(this.body));
+                    let req = ProxiedHttpRequest::new(info, body, *this.start, end);
                     this.proxy.postprocess_client_request(req);
                 }
                 Poll::Ready(None)
@@ -1790,7 +1799,8 @@ where
 
     info: Option<ProxyHttpResponseInfo>,
     start: UtcDateTime,
-    body: Vec<u8>,
+    body: Vec<Bytes>,
+    body_len: usize,
     max_size: usize,
 
     #[pin]
@@ -1802,6 +1812,10 @@ where
     C: ConfigProxyHttp,
     P: ProxyHttpInner<C>,
 {
+    /// `_preallocate` is retained for API stability but is no longer used
+    /// to pre-size a flat buffer — chunks are now refcounted (`Bytes`)
+    /// and stored in a `Vec<Bytes>`, so there's no flat capacity to
+    /// reserve.
     #[allow(clippy::too_many_arguments)]
     fn new(
         proxy: web::Data<ProxyHttp<C, P>>,
@@ -1810,7 +1824,7 @@ where
         status: StatusCode,
         headers: HeaderMap,
         body: S,
-        preallocate: usize,
+        _preallocate: usize,
         timestamp: UtcDateTime,
     ) -> Self {
         let max_size = proxy.shared.config().max_response_size();
@@ -1818,7 +1832,8 @@ where
             proxy,
             stream: body,
             start: timestamp,
-            body: Vec::with_capacity(preallocate),
+            body: Vec::new(),
+            body_len: 0,
             max_size,
             info: Some(ProxyHttpResponseInfo::new(req_id, conn_id, status, headers)),
         }
@@ -1859,14 +1874,16 @@ where
                         thread_id = ?std::thread::current().id(),
                         latency_total = (UtcDateTime::now() - *this.start).as_seconds_f64(),
                         chunk_size = chunk.len(),
-                        total_size = this.body.len() + chunk.len(),
+                        total_size = *this.body_len + chunk.len(),
                         "Polled chunk of http response body",
                     );
                 }
-                if this.body.len() + chunk.len() > *this.max_size {
+                if *this.body_len + chunk.len() > *this.max_size {
                     return Poll::Ready(Some(Err(E::from(PayloadError::Overflow))));
                 }
-                this.body.extend_from_slice(&chunk);
+                // Refcount bump only — no memcpy of the chunk payload.
+                *this.body_len += chunk.len();
+                this.body.push(chunk.clone());
                 Poll::Ready(Some(Ok(chunk)))
             }
 
@@ -1888,7 +1905,7 @@ where
                         worker_id = %this.proxy.id,
                         thread_id = ?std::thread::current().id(),
                         latency_total = (UtcDateTime::now() - *this.start).as_seconds_f64(),
-                        total_size = this.body.len(),
+                        total_size = *this.body_len,
                         error = ?err,
                         "Error while polling http response body",
                     );
@@ -1914,19 +1931,33 @@ where
                         worker_id = %this.proxy.id,
                         thread_id = ?std::thread::current().id(),
                         latency_total = (UtcDateTime::now() - *this.start).as_seconds_f64(),
-                        total_size = this.body.len(),
+                        total_size = *this.body_len,
                         "Done polling http response body",
                     );
                 }
                 let end = UtcDateTime::now();
                 if let Some(info) = mem::take(this.info) {
-                    let res =
-                        ProxiedHttpResponse::new(info, mem::take(this.body), *this.start, end);
+                    let body = concat_bytes(mem::take(this.body));
+                    let res = ProxiedHttpResponse::new(info, body, *this.start, end);
                     this.proxy.postprocess_backend_response(res);
                 }
                 Poll::Ready(None)
             }
         }
+    }
+}
+
+/// Coalesce a vector of refcounted chunks into a single `Bytes`.
+///
+/// - Empty: returns `Bytes::new()`.
+/// - Single chunk: returns the lone `Bytes` directly (zero-copy).
+/// - Multi-chunk: concatenates into one contiguous allocation.
+#[inline]
+fn concat_bytes(mut chunks: Vec<Bytes>) -> Bytes {
+    match chunks.len() {
+        0 => Bytes::new(),
+        1 => chunks.pop().unwrap(),
+        _ => Bytes::from(chunks.concat()),
     }
 }
 
@@ -1947,14 +1978,14 @@ pub(crate) struct ProxiedHttpRequest {
 impl ProxiedHttpRequest {
     pub(crate) fn new(
         info: ProxyHttpRequestInfo,
-        body: Vec<u8>,
+        body: Bytes,
         start: UtcDateTime,
         end: UtcDateTime,
     ) -> Self {
         let size = body.len();
         Self {
             info,
-            body: Bytes::from(body),
+            body,
             size,
             decompressed_body: Bytes::new(),
             decompressed_size: 0,
@@ -1996,14 +2027,14 @@ pub(crate) struct ProxiedHttpResponse {
 impl ProxiedHttpResponse {
     pub(crate) fn new(
         info: ProxyHttpResponseInfo,
-        body: Vec<u8>,
+        body: Bytes,
         start: UtcDateTime,
         end: UtcDateTime,
     ) -> Self {
         let size = body.len();
         Self {
             info,
-            body: Bytes::from(body),
+            body,
             size,
             decompressed_body: Bytes::new(),
             decompressed_size: 0,
