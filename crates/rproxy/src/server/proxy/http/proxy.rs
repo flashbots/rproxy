@@ -1421,7 +1421,6 @@ where
                 Connector::new()
                     .connector(tcp_nodelay)
                     .conn_keep_alive(2 * timeout)
-                    .conn_lifetime(Duration::from_secs(86_400))
                     .disconnect_timeout(Duration::from_millis(100))
                     .limit(connections_limit),
             )
