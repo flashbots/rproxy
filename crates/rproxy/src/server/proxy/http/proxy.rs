@@ -1474,6 +1474,10 @@ pub(crate) struct ProxyHttpRequestInfo {
 
 impl ProxyHttpRequestInfo {
     pub(crate) fn new(req: &HttpRequest, guard: Option<&ConnectionGuard>) -> Self {
+        // Bind connection_info() once — actix recomputes/borrows on each
+        // call and the lookup showed up as a hot spot under load.
+        let ci = req.connection_info();
+
         // copy over only non hop-by-hop headers
         let mut headers = HeaderMap::new();
         for (header, value) in req.headers().iter() {
@@ -1483,7 +1487,7 @@ impl ProxyHttpRequestInfo {
         }
 
         // append remote ip to x-forwarded-for
-        if let Some(peer_addr) = req.connection_info().peer_addr() {
+        if let Some(peer_addr) = ci.peer_addr() {
             let mut forwarded_for = String::new();
             if let Some(ff) = req.headers().get(header::X_FORWARDED_FOR) &&
                 let Ok(ff) = ff.to_str()
@@ -1498,17 +1502,17 @@ impl ProxyHttpRequestInfo {
         }
 
         // set x-forwarded-proto if it's not already set
-        if !req.connection_info().scheme().is_empty() &&
+        if !ci.scheme().is_empty() &&
             req.headers().get(header::X_FORWARDED_PROTO).is_none() &&
-            let Ok(forwarded_proto) = HeaderValue::from_str(req.connection_info().scheme())
+            let Ok(forwarded_proto) = HeaderValue::from_str(ci.scheme())
         {
             headers.insert(header::X_FORWARDED_PROTO, forwarded_proto);
         }
 
         // set x-forwarded-host if it's not already set
-        if !req.connection_info().host().is_empty() &&
+        if !ci.host().is_empty() &&
             req.headers().get(header::X_FORWARDED_HOST).is_none() &&
-            let Ok(forwarded_host) = HeaderValue::from_str(req.connection_info().host())
+            let Ok(forwarded_host) = HeaderValue::from_str(ci.host())
         {
             headers.insert(header::X_FORWARDED_HOST, forwarded_host);
         }
@@ -1518,9 +1522,9 @@ impl ProxyHttpRequestInfo {
         let remote_addr = match guard {
             Some(guard) => match guard.remote_addr.clone() {
                 Some(remote_addr) => Some(remote_addr),
-                None => req.connection_info().peer_addr().map(String::from),
+                None => ci.peer_addr().map(String::from),
             },
-            None => req.connection_info().peer_addr().map(String::from),
+            None => ci.peer_addr().map(String::from),
         };
 
         let path = match req.path() {
