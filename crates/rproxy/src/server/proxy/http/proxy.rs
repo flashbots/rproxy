@@ -1349,6 +1349,9 @@ where
         .service()
         .map(|conn: actix_tls::connect::Connection<awc::http::Uri, tokio::net::TcpStream>| {
             let _ = conn.io_ref().set_nodelay(true);
+            let _ = socket2::SockRef::from(conn.io_ref()).set_tcp_keepalive(
+                &socket2::TcpKeepalive::new().with_time(Duration::from_secs(60)),
+            );
             conn
         });
 
