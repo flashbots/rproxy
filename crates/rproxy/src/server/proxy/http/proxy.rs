@@ -696,9 +696,17 @@ where
 
         this.in_flight_backend.dec();
 
-        this.postprocess_client_request(req);
-
-        Self::stream_to_client(this, req_id, conn_id, bknd_res)
+        // Initiate the response stream first so the client sees no extra
+        // bookkeeping latency on the critical path, then file the request
+        // into the in-flight map for the eventual response postprocessor.
+        // The insert must complete before the response body stream finishes
+        // (which is when `postprocess_backend_response` calls `remove_sync`);
+        // this is guaranteed because actix won't begin polling the streaming
+        // body until after this synchronous handler returns.
+        let this_clone = this.clone();
+        let res = Self::stream_to_client(this, req_id, conn_id, bknd_res);
+        this_clone.postprocess_client_request(req);
+        res
     }
 
     fn stream_to_client<S>(
