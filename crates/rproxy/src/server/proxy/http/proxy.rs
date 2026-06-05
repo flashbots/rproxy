@@ -719,12 +719,13 @@ where
         let mut clnt_res = Self::to_client_response(&bknd_res);
 
         let preallocate = this.shared.config().prealloacated_response_buffer_size();
+        let content_encoding = bknd_res.headers().get(header::CONTENT_ENCODING).cloned();
         let bknd_res_body = ProxyHttpResponseBody::new(
             this,
             req_id,
             conn_id,
             status,
-            bknd_res.headers().clone(),
+            content_encoding,
             bknd_res.into_stream(),
             preallocate,
             timestamp,
@@ -1432,11 +1433,13 @@ where
                                     BodySize::Sized(size) => size, // Body is always sized
                                     BodySize::None | BodySize::Stream => 0,
                                 };
+                                let content_encoding =
+                                    bknd_res.headers().get(header::CONTENT_ENCODING).cloned();
                                 let info = ProxyHttpResponseInfo::new(
                                     clnt_req.info.req_id,
                                     clnt_req.info.conn_id,
                                     bknd_res.status(),
-                                    bknd_res.headers().clone(),
+                                    content_encoding,
                                 );
                                 let mirr_res = ProxiedHttpResponse {
                                     info,
@@ -1616,18 +1619,23 @@ pub(crate) struct ProxyHttpResponseInfo {
     req_id: Uuid,
     conn_id: Uuid,
     status: StatusCode,
-    headers: HeaderMap, // TODO: perhaps we don't need all headers, just select ones
+    content_encoding: Option<HeaderValue>,
 }
 
 impl ProxyHttpResponseInfo {
-    pub(crate) fn new(req_id: Uuid, conn_id: Uuid, status: StatusCode, headers: HeaderMap) -> Self {
-        Self { req_id, conn_id, status, headers }
+    pub(crate) fn new(
+        req_id: Uuid,
+        conn_id: Uuid,
+        status: StatusCode,
+        content_encoding: Option<HeaderValue>,
+    ) -> Self {
+        Self { req_id, conn_id, status, content_encoding }
     }
 
     fn content_encoding(&self) -> String {
-        self.headers
-            .get(header::CONTENT_ENCODING)
-            .map(|h| h.to_str().unwrap_or_default())
+        self.content_encoding
+            .as_ref()
+            .and_then(|h| h.to_str().ok())
             .map(|h| h.to_string())
             .unwrap_or_default()
     }
@@ -1810,7 +1818,7 @@ where
         req_id: Uuid,
         conn_id: Uuid,
         status: StatusCode,
-        headers: HeaderMap,
+        content_encoding: Option<HeaderValue>,
         body: S,
         preallocate: usize,
         timestamp: UtcDateTime,
@@ -1822,7 +1830,7 @@ where
             start: timestamp,
             body: Vec::with_capacity(preallocate),
             max_size,
-            info: Some(ProxyHttpResponseInfo::new(req_id, conn_id, status, headers)),
+            info: Some(ProxyHttpResponseInfo::new(req_id, conn_id, status, content_encoding)),
         }
     }
 }
