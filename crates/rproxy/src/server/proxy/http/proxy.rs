@@ -1354,8 +1354,13 @@ where
 
         let mut req = self.client.request(info.method.clone(), url.as_str()).no_decompress();
 
-        for (header, value) in info.headers.iter() {
-            req = req.insert_header((header.clone(), value.clone()));
+        // Append directly to the awc request's HeaderMap (vs. the
+        // per-header `insert_header` builder pattern, which re-runs
+        // `TryIntoHeaderPair` validation each iteration). HeaderValue
+        // clones are refcount bumps; HeaderName clones are interned/cheap.
+        let dst = req.headers_mut();
+        for (k, v) in info.headers.iter() {
+            dst.append(k.clone(), v.clone());
         }
 
         req
