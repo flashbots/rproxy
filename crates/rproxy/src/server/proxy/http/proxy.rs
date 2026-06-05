@@ -42,7 +42,7 @@ use pin_project::pin_project;
 use prometheus_client::metrics::{counter::Counter, gauge::Gauge};
 use scc::HashMap;
 use time::{UtcDateTime, format_description::well_known::Iso8601};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, oneshot};
 use tracing::{debug, error, info, warn};
 use url::Url;
 use uuid::Uuid;
@@ -77,7 +77,6 @@ where
     shared: ProxyHttpSharedState<C, P>,
 
     backend: ProxyHttpBackendEndpoint<C, P>,
-    requests: HashMap<Uuid, ProxiedHttpRequest>,
     postprocessor: actix::Addr<ProxyHttpPostprocessor<C, P>>,
 
     // Per-worker cached metric handles. These are cheap to clone (each
@@ -159,7 +158,6 @@ where
             id,
             shared,
             backend,
-            requests: HashMap::default(),
             postprocessor,
             in_flight_client,
             in_flight_backend,
@@ -476,12 +474,17 @@ where
         let conn_id = info.conn_id;
 
         let bknd_req = this.backend.new_backend_request(&info);
+        // Oneshot hands the completed ProxiedHttpRequest from the
+        // request body's terminal poll to the response body's terminal
+        // poll, replacing the previous `proxy.requests` HashMap lookup.
+        let (req_tx, req_rx) = oneshot::channel::<ProxiedHttpRequest>();
         let bknd_req_body = ProxyHttpRequestBody::new(
             this.clone(),
             info,
             clnt_req_body,
             this.shared.config().prealloacated_request_buffer_size(),
             timestamp,
+            req_tx,
         );
 
         this.in_flight_backend.inc();
@@ -533,7 +536,7 @@ where
 
         this.in_flight_backend.dec();
 
-        Self::stream_to_client(this, req_id, conn_id, bknd_res)
+        Self::stream_to_client(this, req_id, conn_id, bknd_res, req_rx)
     }
 
     async fn send_to_backend_and_maybe_intercept(
@@ -702,17 +705,16 @@ where
 
         this.in_flight_backend.dec();
 
-        // Initiate the response stream first so the client sees no extra
-        // bookkeeping latency on the critical path, then file the request
-        // into the in-flight map for the eventual response postprocessor.
-        // The insert must complete before the response body stream finishes
-        // (which is when `postprocess_backend_response` calls `remove_sync`);
-        // this is guaranteed because actix won't begin polling the streaming
-        // body until after this synchronous handler returns.
-        let this_clone = this.clone();
-        let res = Self::stream_to_client(this, req_id, conn_id, bknd_res);
-        this_clone.postprocess_client_request(req);
-        res
+        // Hand the already-buffered request to the response body via
+        // oneshot. The response body's terminal poll receives it and
+        // dispatches the combo to the postprocessor. `tx.send` is a
+        // trivial slot-store (no HashMap insert, no contention), so we
+        // no longer need PR 1's stream-first-then-file ordering trick —
+        // the bookkeeping cost is gone entirely.
+        let (req_tx, req_rx) = oneshot::channel::<ProxiedHttpRequest>();
+        let _ = req_tx.send(req);
+
+        Self::stream_to_client(this, req_id, conn_id, bknd_res, req_rx)
     }
 
     fn stream_to_client<S>(
@@ -720,6 +722,7 @@ where
         req_id: Uuid,
         conn_id: Uuid,
         bknd_res: ClientResponse<S>,
+        req_rx: oneshot::Receiver<ProxiedHttpRequest>,
     ) -> Result<HttpResponse, actix_web::Error>
     where
         S: Stream<Item = Result<Bytes, PayloadError>> + Unpin + 'static,
@@ -740,6 +743,7 @@ where
             bknd_res.into_stream(),
             preallocate,
             timestamp,
+            req_rx,
         );
 
         #[cfg(debug_assertions)]
@@ -753,38 +757,6 @@ where
         );
 
         Ok(clnt_res.streaming(bknd_res_body))
-    }
-
-    fn postprocess_client_request(&self, req: ProxiedHttpRequest) {
-        let id = req.info.req_id;
-        let conn_id = req.info.conn_id;
-
-        if self.requests.insert_sync(id, req).is_err() {
-            error!(
-                proxy = P::name(),
-                request_id = %id,
-                connection_id = %conn_id,
-                worker_id = %self.id,
-                "Duplicate request id",
-            );
-        };
-    }
-
-    fn postprocess_backend_response(&self, bknd_res: ProxiedHttpResponse) {
-        let Some((_, clnt_req)) = self.requests.remove_sync(&bknd_res.info.req_id) else {
-            error!(
-                proxy = P::name(),
-                request_id = %bknd_res.info.req_id,
-                connection_id = %bknd_res.info.conn_id,
-                worker_id = %self.id,
-                "Proxied http response for unmatching request",
-            );
-            return
-        };
-
-        // hand over to postprocessor asynchronously so that we can return the
-        // response to the client as early as possible
-        self.postprocessor.do_send(ProxiedHttpCombo { req: clnt_req, res: bknd_res });
     }
 
     fn finalise_proxying(
@@ -1715,6 +1687,12 @@ where
     body_len: usize,
     max_size: usize,
 
+    /// Oneshot for handing the completed `ProxiedHttpRequest` off to the
+    /// response stream (which combines it with the response and forwards
+    /// the pair to the postprocessor). Replaces the previous
+    /// `ProxyHttp.requests` HashMap.
+    req_tx: Option<oneshot::Sender<ProxiedHttpRequest>>,
+
     #[pin]
     stream: S,
 }
@@ -1734,6 +1712,7 @@ where
         body: S,
         _preallocate: usize,
         timestamp: UtcDateTime,
+        req_tx: oneshot::Sender<ProxiedHttpRequest>,
     ) -> Self {
         let max_size = proxy.shared.config().max_request_size();
         Self {
@@ -1744,6 +1723,7 @@ where
             body: Vec::new(),
             body_len: 0,
             max_size,
+            req_tx: Some(req_tx),
         }
     }
 }
@@ -1847,7 +1827,14 @@ where
                 if let Some(info) = mem::take(this.info) {
                     let body = concat_bytes(mem::take(this.body));
                     let req = ProxiedHttpRequest::new(info, body, *this.start, end);
-                    this.proxy.postprocess_client_request(req);
+                    if let Some(tx) = this.req_tx.take() {
+                        // Receiver lives on the matching response body. If
+                        // the client disconnected before reading the
+                        // response, the receiver is dropped and we silently
+                        // discard the postprocess hand-off — there is no
+                        // matching response to combine with anyway.
+                        let _ = tx.send(req);
+                    }
                 }
                 Poll::Ready(None)
             }
@@ -1870,6 +1857,12 @@ where
     body: Vec<Bytes>,
     body_len: usize,
     max_size: usize,
+
+    /// Oneshot for receiving the matching `ProxiedHttpRequest` from the
+    /// request body stream. Combined with the completed response and
+    /// forwarded to the postprocessor on terminal poll. Replaces the
+    /// previous `ProxyHttp.requests` HashMap lookup.
+    req_rx: Option<oneshot::Receiver<ProxiedHttpRequest>>,
 
     #[pin]
     stream: S,
@@ -1894,6 +1887,7 @@ where
         body: S,
         _preallocate: usize,
         timestamp: UtcDateTime,
+        req_rx: oneshot::Receiver<ProxiedHttpRequest>,
     ) -> Self {
         let max_size = proxy.shared.config().max_response_size();
         Self {
@@ -1904,6 +1898,7 @@ where
             body_len: 0,
             max_size,
             info: Some(ProxyHttpResponseInfo::new(req_id, conn_id, status, content_encoding)),
+            req_rx: Some(req_rx),
         }
     }
 }
@@ -2007,7 +2002,63 @@ where
                 if let Some(info) = mem::take(this.info) {
                     let body = concat_bytes(mem::take(this.body));
                     let res = ProxiedHttpResponse::new(info, body, *this.start, end);
-                    this.proxy.postprocess_backend_response(res);
+                    // Combine with the matching request and dispatch to
+                    // the postprocessor. The request body's terminal poll
+                    // sends on the oneshot — usually before the response
+                    // completes (backend processing time dominates), so
+                    // `try_recv` typically resolves immediately. On a
+                    // small/fast response that races ahead of the request
+                    // body completion, fall back to awaiting on a spawned
+                    // task. Closed/cancelled => no request to combine with;
+                    // log and drop the postprocessing for this exchange.
+                    let postprocessor = this.proxy.postprocessor.clone();
+                    let worker_id = this.proxy.id;
+                    match this.req_rx.take() {
+                        Some(mut rx) => match rx.try_recv() {
+                            Ok(req) => {
+                                postprocessor.do_send(ProxiedHttpCombo { req, res });
+                            }
+                            Err(oneshot::error::TryRecvError::Empty) => {
+                                let req_id = res.info.req_id;
+                                let conn_id = res.info.conn_id;
+                                actix::spawn(async move {
+                                    match rx.await {
+                                        Ok(req) => {
+                                            postprocessor
+                                                .do_send(ProxiedHttpCombo { req, res });
+                                        }
+                                        Err(_) => {
+                                            error!(
+                                                proxy = P::name(),
+                                                request_id = %req_id,
+                                                connection_id = %conn_id,
+                                                worker_id = %worker_id,
+                                                "Proxied http response for unmatching request (oneshot closed)",
+                                            );
+                                        }
+                                    }
+                                });
+                            }
+                            Err(oneshot::error::TryRecvError::Closed) => {
+                                error!(
+                                    proxy = P::name(),
+                                    request_id = %res.info.req_id,
+                                    connection_id = %res.info.conn_id,
+                                    worker_id = %worker_id,
+                                    "Proxied http response for unmatching request (oneshot closed)",
+                                );
+                            }
+                        },
+                        None => {
+                            error!(
+                                proxy = P::name(),
+                                request_id = %res.info.req_id,
+                                connection_id = %res.info.conn_id,
+                                worker_id = %worker_id,
+                                "Proxied http response without a request receiver",
+                            );
+                        }
+                    }
                 }
                 Poll::Ready(None)
             }
