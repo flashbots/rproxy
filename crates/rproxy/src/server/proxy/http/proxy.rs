@@ -87,6 +87,11 @@ where
     in_flight_client: Gauge,
     in_flight_backend: Gauge,
     proxy_failure_count: Counter,
+
+    // Per-worker cache of (user_agent -> Counter) so that we only pay the
+    // `Family::get_or_create` cost the first time a UA is seen on this
+    // worker. Lookup is `&str`-keyed (no allocation on hit).
+    client_info_cache: HashMap<String, Counter>,
 }
 
 impl<C, P> ProxyHttp<C, P>
@@ -160,6 +165,7 @@ where
             in_flight_client,
             in_flight_backend,
             proxy_failure_count,
+            client_info_cache: HashMap::default(),
         }
     }
 
@@ -423,13 +429,29 @@ where
             !user_agent.is_empty() &&
             let Ok(user_agent) = user_agent.to_str()
         {
-            metrics
-                .client_info
-                .get_or_create(&LabelsProxyClientInfo {
-                    proxy: P::name(),
-                    user_agent: user_agent.to_string(),
-                })
-                .inc();
+            // Hot path: read-only lookup keyed by &str (no allocation).
+            // Cold path: allocate the owned String key and resolve the
+            // counter from the metrics family exactly once per worker per
+            // distinct UA.
+            if let Some(entry) = this.client_info_cache.read_sync(user_agent, |_, c| c.clone()) {
+                entry.inc();
+            } else {
+                let counter = metrics
+                    .client_info
+                    .get_or_create(&LabelsProxyClientInfo {
+                        proxy: P::name(),
+                        user_agent: user_agent.to_string(),
+                    })
+                    .clone();
+                counter.inc();
+                // soft cap to prevent unbounded growth from hostile UA values
+                if this.client_info_cache.len() < 100 {
+                    // Best-effort insert; races with another task on the same
+                    // worker thread shouldn't happen given !Send actix workers,
+                    // but tolerate insert errors regardless.
+                    let _ = this.client_info_cache.insert_sync(user_agent.to_string(), counter);
+                }
+            }
         }
 
         let in_flight_client = this.in_flight_client.clone();
