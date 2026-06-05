@@ -85,6 +85,7 @@ where
     in_flight_client: Gauge,
     in_flight_backend: Gauge,
     proxy_failure_count: Counter,
+    oneshot_spawn_fallback_count: Counter,
 
     // Per-worker cache of (user_agent -> Counter) so that we only pay the
     // `Family::get_or_create` cost the first time a UA is seen on this
@@ -153,6 +154,11 @@ where
             shared.metrics.http_in_flight_requests_backend.get_or_create(&labels_proxy).clone();
         let proxy_failure_count =
             shared.metrics.http_proxy_failure_count.get_or_create(&labels_proxy).clone();
+        let oneshot_spawn_fallback_count = shared
+            .metrics
+            .proxy_oneshot_spawn_fallback_count
+            .get_or_create(&labels_proxy)
+            .clone();
 
         Self {
             id,
@@ -162,6 +168,7 @@ where
             in_flight_client,
             in_flight_backend,
             proxy_failure_count,
+            oneshot_spawn_fallback_count,
             client_info_cache: HashMap::default(),
         }
     }
@@ -2021,6 +2028,14 @@ where
                             Err(oneshot::error::TryRecvError::Empty) => {
                                 let req_id = res.info.req_id;
                                 let conn_id = res.info.conn_id;
+                                this.proxy.oneshot_spawn_fallback_count.inc();
+                                warn!(
+                                    proxy = P::name(),
+                                    request_id = %req_id,
+                                    connection_id = %conn_id,
+                                    worker_id = %worker_id,
+                                    "Proxied http response terminal poll raced ahead of request; spawning oneshot await fallback",
+                                );
                                 actix::spawn(async move {
                                     match rx.await {
                                         Ok(req) => {

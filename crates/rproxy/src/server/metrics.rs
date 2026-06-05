@@ -47,6 +47,8 @@ pub(crate) struct Metrics {
     pub(crate) http_proxy_success_count: Family<LabelsProxyHttpJrpc, Counter>,
     pub(crate) http_proxy_failure_count: Family<LabelsProxy, Counter>,
 
+    pub(crate) proxy_oneshot_spawn_fallback_count: Family<LabelsProxy, Counter>,
+
     pub(crate) http_request_size: Family<LabelsProxyHttpJrpc, Candlestick>,
     pub(crate) http_response_size: Family<LabelsProxyHttpJrpc, Candlestick>,
 
@@ -90,6 +92,8 @@ impl Metrics {
 
             http_proxy_success_count: Family::default(),
             http_proxy_failure_count: Family::default(),
+
+            proxy_oneshot_spawn_fallback_count: Family::default(),
 
             http_request_size: Family::default(),
             http_response_size: Family::default(),
@@ -189,6 +193,12 @@ impl Metrics {
             "http_proxy_failure_count",
             "count of failures to proxy http request/response",
             this.http_proxy_failure_count.clone(),
+        );
+
+        this.registry.register(
+            "proxy_oneshot_spawn_fallback_count",
+            "count of postprocess pairings that fell back to spawned await on the request oneshot",
+            this.proxy_oneshot_spawn_fallback_count.clone(),
         );
 
         this.registry.register_with_unit(
