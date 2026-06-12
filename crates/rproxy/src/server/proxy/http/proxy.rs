@@ -793,40 +793,6 @@ where
         mirroring_peers: Arc<Vec<actix::Addr<ProxyHttpBackendEndpoint<C, P>>>>,
         mut mirroring_peer_round_robin_index: usize,
     ) {
-        // Fast path: when nobody is logging the proxied request/response and
-        // there are no mirror peers configured, skip the (expensive) response
-        // decompress + parse and the (always-evaluated) `info!` formatting in
-        // `maybe_log_proxied_request_and_response`. We still parse the request
-        // for the jrpc method label so metrics keep their correct dimensions.
-        let log_off =
-            !inner.config().log_proxied_requests() && !inner.config().log_proxied_responses();
-        let no_mirror = mirroring_peers.is_empty();
-        if log_off && no_mirror {
-            if clnt_req.decompressed_size < clnt_req.size {
-                (clnt_req.decompressed_body, clnt_req.decompressed_size) = decompress(
-                    clnt_req.body.clone(),
-                    clnt_req.size,
-                    clnt_req.info.content_encoding(),
-                );
-            }
-            match serde_json::from_slice::<JrpcRequestMetaMaybeBatch>(&clnt_req.decompressed_body) {
-                Ok(jrpc) => {
-                    Self::emit_metrics_on_proxy_success(&jrpc, &clnt_req, &bknd_res, metrics);
-                }
-                Err(err) => {
-                    warn!(
-                        proxy = P::name(),
-                        request_id = %clnt_req.info.req_id,
-                        connection_id = %clnt_req.info.conn_id,
-                        worker_id = %worker_id,
-                        error = ?err,
-                        "Failed to parse json-rpc request",
-                    );
-                }
-            }
-            return;
-        }
-
         if clnt_req.decompressed_size < clnt_req.size {
             (clnt_req.decompressed_body, clnt_req.decompressed_size) =
                 decompress(clnt_req.body.clone(), clnt_req.size, clnt_req.info.content_encoding());
