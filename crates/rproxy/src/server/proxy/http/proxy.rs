@@ -1362,9 +1362,6 @@ where
                 Connector::new()
                     .connector(tcp_nodelay)
                     .conn_keep_alive(2 * timeout)
-                    // 100ms grace is fine for loopback (op-rbuilder); raise if backend
-                    // is ever non-loopback (would risk truncating responses on shutdown).
-                    .disconnect_timeout(Duration::from_millis(100))
                     .limit(connections_limit),
             )
             .timeout(timeout)
