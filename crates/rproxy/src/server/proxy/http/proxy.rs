@@ -621,8 +621,7 @@ where
         let (decompressed_body, decompressed_size) =
             decompress(body.clone(), size, info.content_encoding());
 
-        let jrpc_meta = match serde_json::from_slice::<JrpcRequestMetaMaybeBatch>(&decompressed_body)
-        {
+        match serde_json::from_slice::<JrpcRequestMetaMaybeBatch>(&decompressed_body) {
             Ok(jrpc) => {
                 if let Some(res) = this.shared.inner.should_intercept(&jrpc) {
                     let json_req = if this.shared.config().log_proxied_requests() {
@@ -648,9 +647,6 @@ where
 
                     return res;
                 }
-                // Stash the parsed jrpc so `finalise_proxying` can avoid
-                // re-parsing the same body.
-                Some(Arc::new(jrpc))
             }
 
             Err(err) => {
@@ -664,9 +660,8 @@ where
                     error = ?err,
                     "Failed to parse json-rpc request",
                 );
-                None
             }
-        };
+        }
 
         let req = ProxiedHttpRequest {
             info,
@@ -676,7 +671,6 @@ where
             decompressed_size,
             start: timestamp,
             end: UtcDateTime::now(),
-            jrpc_meta,
         };
 
         let bknd_req = this.backend.new_backend_request(&req.info);
@@ -808,12 +802,6 @@ where
             !inner.config().log_proxied_requests() && !inner.config().log_proxied_responses();
         let no_mirror = mirroring_peers.is_empty();
         if log_off && no_mirror {
-            // If the request body has already been parsed (intercept path)
-            // we can avoid a second decompress + parse.
-            if let Some(jrpc) = clnt_req.jrpc_meta.clone() {
-                Self::emit_metrics_on_proxy_success(&jrpc, &clnt_req, &bknd_res, metrics);
-                return;
-            }
             if clnt_req.decompressed_size < clnt_req.size {
                 (clnt_req.decompressed_body, clnt_req.decompressed_size) = decompress(
                     clnt_req.body.clone(),
@@ -849,15 +837,7 @@ where
                 decompress(bknd_res.body.clone(), bknd_res.size, bknd_res.info.content_encoding());
         }
 
-        // Reuse the parsed jrpc body when the intercept path stashed it on
-        // the `ProxiedHttpRequest`, otherwise parse it now.
-        let parsed = if let Some(stashed) = clnt_req.jrpc_meta.clone() {
-            Ok(stashed)
-        } else {
-            serde_json::from_slice::<JrpcRequestMetaMaybeBatch>(&clnt_req.decompressed_body)
-                .map(Arc::new)
-        };
-        match parsed {
+        match serde_json::from_slice::<JrpcRequestMetaMaybeBatch>(&clnt_req.decompressed_body) {
             Ok(jrpc) => {
                 if inner.should_mirror(&jrpc, &clnt_req, &bknd_res) {
                     let mirrors_count = match inner.config().mirroring_strategy() {
@@ -2014,10 +1994,6 @@ pub(crate) struct ProxiedHttpRequest {
     decompressed_size: usize,
     start: UtcDateTime,
     end: UtcDateTime,
-    /// Optionally stashed jrpc meta parsed on the intercept path so that
-    /// `finalise_proxying` does not redo `serde_json::from_slice` on the
-    /// same body. `None` for the prod streaming path which never parses.
-    jrpc_meta: Option<Arc<JrpcRequestMetaMaybeBatch>>,
 }
 
 impl ProxiedHttpRequest {
@@ -2036,7 +2012,6 @@ impl ProxiedHttpRequest {
             decompressed_size: 0,
             start,
             end,
-            jrpc_meta: None,
         }
     }
 
