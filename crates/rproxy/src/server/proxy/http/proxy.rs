@@ -90,6 +90,13 @@ where
     // Per-worker cache of (user_agent -> Counter) so that we only pay the
     // `Family::get_or_create` cost the first time a UA is seen on this
     // worker. Lookup is `&str`-keyed (no allocation on hit).
+    //
+    // SAFETY: the `user_agent` label is client-controlled and therefore
+    // unbounded in principle. This metric is intended only for endpoints
+    // on a closed network (authrpc with sequencer/peer-mirror as the only
+    // clients in practice). If reused for a public-facing endpoint, gate
+    // UA cardinality before calling `get_or_create` to avoid an unbounded
+    // Prometheus series blowup.
     client_info_cache: HashMap<String, Counter>,
 }
 
