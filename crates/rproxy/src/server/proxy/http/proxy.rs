@@ -149,7 +149,14 @@ impl ProxyHttpMetrics {
                 })
                 .clone();
             counter.inc();
-            // soft cap to prevent unbounded growth from hostile UA values
+            // Soft cap on the *cache* size only. This bounds the per-worker
+            // lookup map, NOT the Prometheus series: `get_or_create` above
+            // already ran unconditionally, so a hostile/varied UA stream past
+            // the cap still creates one series per distinct UA (and re-resolves
+            // it every request, uncached). Safe here only because the closed
+            // authrpc network keeps UA cardinality tiny — see the SAFETY note
+            // on `client_info_cache`. To actually bound cardinality on a
+            // public endpoint, gate `get_or_create` itself.
             if self.client_info_cache.len() < 100 {
                 let _ = self.client_info_cache.insert_sync(user_agent.to_string(), counter);
             }
@@ -1397,7 +1404,17 @@ where
         )
         .service()
         .map(|conn: actix_tls::connect::Connection<awc::http::Uri, tokio::net::TcpStream>| {
-            let _ = conn.io_ref().set_nodelay(true);
+            // Mirror the client leg (ConnectionGuard::on_connect): fail open on
+            // a set_nodelay error, but log it. A silent failure here would
+            // quietly reintroduce the Nagle/DELACK tail with no signal — most
+            // relevant if the backend ever moves off loopback.
+            if let Err(err) = conn.io_ref().set_nodelay(true) {
+                debug!(
+                    proxy = P::name(),
+                    error = ?err,
+                    "Failed to set TCP_NODELAY on backend connection",
+                );
+            }
             conn
         });
 
