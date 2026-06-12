@@ -66,6 +66,97 @@ use crate::{
     utils::{Loggable, decompress, is_hop_by_hop_header, raw_transaction_to_hash},
 };
 
+// ProxyHttpMetrics ----------------------------------------------------
+
+// Per-worker cached metric handles + UA-counter cache, bundled so the hot
+// path doesn't re-resolve them via `Family::get_or_create` per request.
+// Held behind `Arc` on `ProxyHttp` so cloning a handle to span an `await`
+// is one ref-count bump — `scc::HashMap::clone` is a deep iter+reinsert,
+// so this struct deliberately does not implement `Clone`.
+struct ProxyHttpMetrics {
+    proxy_name: &'static str,
+    in_flight_client: Gauge,
+    in_flight_backend: Gauge,
+    proxy_failure_count: Counter,
+    client_info_family: prometheus_client::metrics::family::Family<LabelsProxyClientInfo, Counter>,
+
+    // Per-worker cache of (user_agent -> Counter). Lookup is `&str`-keyed
+    // (no allocation on hit).
+    //
+    // SAFETY: the `user_agent` label is client-controlled and therefore
+    // unbounded in principle. This metric is intended only for endpoints
+    // on a closed network (authrpc with sequencer/peer-mirror as the only
+    // clients in practice). If reused for a public-facing endpoint, gate
+    // UA cardinality before calling `get_or_create` to avoid an unbounded
+    // Prometheus series blowup.
+    client_info_cache: HashMap<String, Counter>,
+}
+
+impl ProxyHttpMetrics {
+    fn new(proxy_name: &'static str, metrics: &Arc<Metrics>) -> Self {
+        let labels = LabelsProxy { proxy: proxy_name };
+        Self {
+            proxy_name,
+            in_flight_client: metrics
+                .http_in_flight_requests_client
+                .get_or_create(&labels)
+                .clone(),
+            in_flight_backend: metrics
+                .http_in_flight_requests_backend
+                .get_or_create(&labels)
+                .clone(),
+            proxy_failure_count: metrics
+                .http_proxy_failure_count
+                .get_or_create(&labels)
+                .clone(),
+            client_info_family: metrics.client_info.clone(),
+            client_info_cache: HashMap::default(),
+        }
+    }
+
+    fn inc_in_flight_client(&self) {
+        self.in_flight_client.inc();
+    }
+
+    fn dec_in_flight_client(&self) {
+        self.in_flight_client.dec();
+    }
+
+    fn inc_in_flight_backend(&self) {
+        self.in_flight_backend.inc();
+    }
+
+    fn dec_in_flight_backend(&self) {
+        self.in_flight_backend.dec();
+    }
+
+    fn record_proxy_failure(&self) {
+        self.proxy_failure_count.inc();
+    }
+
+    fn bump_client_info(&self, user_agent: &str) {
+        // Hot path: read-only lookup keyed by &str (no allocation).
+        // Cold path: allocate the owned String key and resolve the counter
+        // from the metrics family exactly once per worker per distinct UA.
+        if let Some(entry) = self.client_info_cache.read_sync(user_agent, |_, c| c.clone()) {
+            entry.inc();
+        } else {
+            let counter = self
+                .client_info_family
+                .get_or_create(&LabelsProxyClientInfo {
+                    proxy: self.proxy_name,
+                    user_agent: user_agent.to_string(),
+                })
+                .clone();
+            counter.inc();
+            // soft cap to prevent unbounded growth from hostile UA values
+            if self.client_info_cache.len() < 100 {
+                let _ = self.client_info_cache.insert_sync(user_agent.to_string(), counter);
+            }
+        }
+    }
+}
+
 // ProxyHttp -----------------------------------------------------------
 
 pub(crate) struct ProxyHttp<C, P>
@@ -81,24 +172,7 @@ where
     requests: HashMap<Uuid, ProxiedHttpRequest>,
     postprocessor: actix::Addr<ProxyHttpPostprocessor<C, P>>,
 
-    // Per-worker cached metric handles. These are cheap to clone (each
-    // wraps an `Arc<AtomicU64>` internally) and bypass the per-request
-    // `Family::get_or_create` lookup on the hot path.
-    in_flight_client: Gauge,
-    in_flight_backend: Gauge,
-    proxy_failure_count: Counter,
-
-    // Per-worker cache of (user_agent -> Counter) so that we only pay the
-    // `Family::get_or_create` cost the first time a UA is seen on this
-    // worker. Lookup is `&str`-keyed (no allocation on hit).
-    //
-    // SAFETY: the `user_agent` label is client-controlled and therefore
-    // unbounded in principle. This metric is intended only for endpoints
-    // on a closed network (authrpc with sequencer/peer-mirror as the only
-    // clients in practice). If reused for a public-facing endpoint, gate
-    // UA cardinality before calling `get_or_create` to avoid an unbounded
-    // Prometheus series blowup.
-    client_info_cache: HashMap<String, Counter>,
+    metrics: Arc<ProxyHttpMetrics>,
 }
 
 impl<C, P> ProxyHttp<C, P>
@@ -155,13 +229,7 @@ where
         }
         .start();
 
-        let labels_proxy = LabelsProxy { proxy: P::name() };
-        let in_flight_client =
-            shared.metrics.http_in_flight_requests_client.get_or_create(&labels_proxy).clone();
-        let in_flight_backend =
-            shared.metrics.http_in_flight_requests_backend.get_or_create(&labels_proxy).clone();
-        let proxy_failure_count =
-            shared.metrics.http_proxy_failure_count.get_or_create(&labels_proxy).clone();
+        let metrics = Arc::new(ProxyHttpMetrics::new(P::name(), &shared.metrics));
 
         Self {
             id,
@@ -169,10 +237,7 @@ where
             backend,
             requests: HashMap::default(),
             postprocessor,
-            in_flight_client,
-            in_flight_backend,
-            proxy_failure_count,
-            client_info_cache: HashMap::default(),
+            metrics,
         }
     }
 
@@ -432,39 +497,15 @@ where
             "Receiving http request...",
         );
 
-        let metrics = this.shared.metrics.clone();
-
         if let Some(user_agent) = clnt_req.headers().get(header::USER_AGENT) &&
             !user_agent.is_empty() &&
             let Ok(user_agent) = user_agent.to_str()
         {
-            // Hot path: read-only lookup keyed by &str (no allocation).
-            // Cold path: allocate the owned String key and resolve the
-            // counter from the metrics family exactly once per worker per
-            // distinct UA.
-            if let Some(entry) = this.client_info_cache.read_sync(user_agent, |_, c| c.clone()) {
-                entry.inc();
-            } else {
-                let counter = metrics
-                    .client_info
-                    .get_or_create(&LabelsProxyClientInfo {
-                        proxy: P::name(),
-                        user_agent: user_agent.to_string(),
-                    })
-                    .clone();
-                counter.inc();
-                // soft cap to prevent unbounded growth from hostile UA values
-                if this.client_info_cache.len() < 100 {
-                    // Best-effort insert; races with another task on the same
-                    // worker thread shouldn't happen given !Send actix workers,
-                    // but tolerate insert errors regardless.
-                    let _ = this.client_info_cache.insert_sync(user_agent.to_string(), counter);
-                }
-            }
+            this.metrics.bump_client_info(user_agent);
         }
 
-        let in_flight_client = this.in_flight_client.clone();
-        in_flight_client.inc();
+        let metrics = this.metrics.clone();
+        metrics.inc_in_flight_client();
 
         let res = if this.shared.inner.might_intercept() {
             Self::send_to_backend_and_maybe_intercept(this, info, clnt_req_body, timestamp).await
@@ -472,7 +513,7 @@ where
             Self::stream_to_backend(this, info, clnt_req_body, timestamp).await
         };
 
-        in_flight_client.dec();
+        metrics.dec_in_flight_client();
 
         res
     }
@@ -495,7 +536,7 @@ where
             timestamp,
         );
 
-        this.in_flight_backend.inc();
+        this.metrics.inc_in_flight_backend();
 
         #[cfg(debug_assertions)]
         debug!(
@@ -524,8 +565,8 @@ where
                     error = ?err,
                     "Failed to proxy a request",
                 );
-                this.in_flight_backend.dec();
-                this.proxy_failure_count.inc();
+                this.metrics.dec_in_flight_backend();
+                this.metrics.record_proxy_failure();
                 return Ok(HttpResponse::BadGateway().body(format!("Backend error: {err:?}")));
             }
         };
@@ -542,7 +583,7 @@ where
             "Finished streaming http request to backend",
         );
 
-        this.in_flight_backend.dec();
+        this.metrics.dec_in_flight_backend();
 
         Self::stream_to_client(this, req_id, conn_id, bknd_res)
     }
@@ -567,7 +608,7 @@ where
             "Sending http request to backend...",
         );
 
-        this.in_flight_backend.inc();
+        this.metrics.inc_in_flight_backend();
 
         let body =
             match clnt_req_body.to_bytes_limited(this.shared.config().max_request_size()).await {
@@ -585,8 +626,8 @@ where
                         error = ?err,
                         "Failed to proxy a request",
                     );
-                    this.in_flight_backend.dec();
-                    this.proxy_failure_count.inc();
+                    this.metrics.dec_in_flight_backend();
+                    this.metrics.record_proxy_failure();
                     return Ok(HttpResponse::BadGateway().body(format!("Backend error: {err:?}")));
                 }
 
@@ -606,13 +647,13 @@ where
                         error = ?err,
                         "Failed to proxy a request",
                     );
-                    this.in_flight_backend.dec();
-                    this.proxy_failure_count.inc();
+                    this.metrics.dec_in_flight_backend();
+                    this.metrics.record_proxy_failure();
                     return Ok(HttpResponse::PayloadTooLarge().finish());
                 }
             };
 
-        this.in_flight_backend.dec();
+        this.metrics.dec_in_flight_backend();
 
         #[cfg(debug_assertions)]
         debug!(
@@ -683,7 +724,7 @@ where
 
         let bknd_req = this.backend.new_backend_request(&req.info);
 
-        this.in_flight_backend.inc();
+        this.metrics.inc_in_flight_backend();
 
         let bknd_res = match bknd_req.send_body(req.body.clone()).await {
             Ok(bknd_res) => bknd_res,
@@ -699,13 +740,13 @@ where
                     error = ?err,
                     "Failed to proxy a request",
                 );
-                this.proxy_failure_count.inc();
-                this.in_flight_backend.dec();
+                this.metrics.record_proxy_failure();
+                this.metrics.dec_in_flight_backend();
                 return Ok(HttpResponse::BadGateway().body(format!("Backend error: {err:?}")));
             }
         };
 
-        this.in_flight_backend.dec();
+        this.metrics.dec_in_flight_backend();
 
         this.postprocess_client_request(req);
 
