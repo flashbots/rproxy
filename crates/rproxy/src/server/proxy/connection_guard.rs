@@ -86,6 +86,16 @@ impl ConnectionGuard {
                 );
             }
 
+            if let Some(stream) = stream &&
+                let Err(err) = stream.set_nodelay(true)
+            {
+                warn!(
+                    proxy = proxy,
+                    error = ?err,
+                    "Failed to set TCP_NODELAY on client connection",
+                );
+            }
+
             if let Some(stream) = stream {
                 let id = Uuid::now_v7();
 
