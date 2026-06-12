@@ -14,6 +14,7 @@ use std::{
 };
 
 use actix::{Actor, AsyncContext, WrapFuture};
+use actix_service::ServiceExt as _;
 use actix_web::{
     self,
     App,
@@ -1350,7 +1351,6 @@ where
 
         // Build the inner TCP connector ourselves so we can flip
         // TCP_NODELAY on after each connect
-        use actix_service::ServiceExt as _;
         let tcp_nodelay = actix_tls::connect::Connector::new(
             actix_tls::connect::Resolver::default(),
         )
