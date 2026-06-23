@@ -19,6 +19,7 @@ use prometheus_client::{
     registry::{Registry, Unit},
 };
 use socket2::{SockAddr, Socket, TcpKeepalive};
+use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
 use crate::server::{config::ConfigMetrics, metrics::candlestick::Candlestick};
@@ -281,7 +282,7 @@ impl Metrics {
 
     pub(crate) async fn run(
         self: Arc<Self>,
-        canceller: tokio_util::sync::CancellationToken,
+        shutdown_signal: CancellationToken,
     ) -> Result<(), Box<dyn std::error::Error + Send>> {
         let listen_address = self.config.listen_address();
 
@@ -305,7 +306,7 @@ impl Metrics {
                 .default_service(web::route().to(Self::receive))
         })
         .workers(1)
-        .shutdown_signal(canceller.cancelled_owned())
+        .shutdown_signal(shutdown_signal.cancelled_owned())
         .listen(listener)
         {
             Ok(metrics) => metrics,
