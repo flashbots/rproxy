@@ -8,6 +8,8 @@ pub(crate) trait ConfigProxyHttp: Clone + Send + Unpin + 'static {
     fn backend_max_concurrent_requests(&self) -> usize;
     fn backend_timeout(&self) -> Duration;
     fn backend_url(&self) -> Url;
+    fn block_time(&self) -> Duration;
+    fn flashblocks_per_block(&self) -> u64;
     fn idle_connection_timeout(&self) -> Duration;
     fn keepalive_interval(&self) -> Duration;
     fn keepalive_retries(&self) -> u32;

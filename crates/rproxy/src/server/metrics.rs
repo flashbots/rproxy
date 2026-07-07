@@ -2,7 +2,12 @@ mod candlestick;
 
 // ---------------------------------------------------------------------
 
-use std::{borrow::Cow, net::TcpListener, sync::Arc, time::Duration};
+use std::{
+    borrow::Cow,
+    net::TcpListener,
+    sync::{Arc, atomic::AtomicI64},
+    time::Duration,
+};
 
 use actix_web::{
     App,
@@ -53,6 +58,14 @@ pub(crate) struct Metrics {
     pub(crate) http_request_decompressed_size: Family<LabelsProxyHttpJrpc, Candlestick>,
     pub(crate) http_response_decompressed_size: Family<LabelsProxyHttpJrpc, Candlestick>,
 
+    pub(crate) fcu_arrival: Family<LabelsProxy, Candlestick>,
+    pub(crate) fcu_reduced_flashblocks: Family<LabelsProxy, Counter>,
+
+    // Highest block timestamp (unix seconds) of the last fcu-with-attributes measured
+    // so we only measure fcu with attributes once per block timestamp. Assumes block
+    // timestamp requests increase monotonically and does not account for reorgs
+    pub(crate) fcu_block_timestamp_latest: AtomicI64,
+
     pub(crate) tls_certificate_valid_not_before: Gauge,
     pub(crate) tls_certificate_valid_not_after: Gauge,
 
@@ -96,6 +109,11 @@ impl Metrics {
 
             http_request_decompressed_size: Family::default(),
             http_response_decompressed_size: Family::default(),
+
+            fcu_arrival: Family::default(),
+            fcu_reduced_flashblocks: Family::default(),
+
+            fcu_block_timestamp_latest: AtomicI64::new(0),
 
             tls_certificate_valid_not_before: Gauge::default(),
             tls_certificate_valid_not_after: Gauge::default(),
@@ -217,6 +235,19 @@ impl Metrics {
             "decompressed sizes of proxied http responses",
             Unit::Bytes,
             this.http_response_decompressed_size.clone(),
+        );
+
+        this.registry.register_with_unit(
+            "fcu_arrival",
+            "how late the first forkchoice-update with attributes arrives into a block (relative to the block's building window start)",
+            Unit::Other(String::from("milliseconds")),
+            this.fcu_arrival.clone(),
+        );
+
+        this.registry.register(
+            "fcu_reduced_flashblocks",
+            "count of flashblocks missed as a result of late forkchoice-updates with attributes",
+            this.fcu_reduced_flashblocks.clone(),
         );
 
         this.registry.register(
