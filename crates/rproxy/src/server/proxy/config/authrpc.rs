@@ -52,6 +52,20 @@ pub(crate) struct ConfigAuthrpc {
     )]
     pub(crate) backend_timeout: Duration,
 
+    /// duration of a block; combined with --authrpc-flashblocks-per-block
+    /// to measure how late a forkchoice-update with attributes arrives
+    /// into a block
+    #[arg(
+        default_value = "1s",
+        env = "RPROXY_AUTHRPC_BLOCK_TIME",
+        help_heading = "authrpc",
+        long("authrpc-block-time"),
+        name("authrpc_block_time"),
+        value_name = "duration",
+        value_parser = humantime::parse_duration
+    )]
+    pub(crate) block_time: Duration,
+
     /// whether authrpc proxy should deduplicate incoming fcus w/o payload
     /// (mitigates fcu avalanche issue)
     #[arg(
@@ -70,6 +84,21 @@ pub(crate) struct ConfigAuthrpc {
         name("authrpc_enabled")
     )]
     pub(crate) enabled: bool,
+
+    /// number of flashblocks in a block; when > 0 the authrpc proxy
+    /// measures how late the first forkchoice-update with attributes
+    /// arrives into each block (relative to --authrpc-block-time) and
+    /// emits the count of flashblocks missed as a result (0 disables
+    /// the measurement)
+    #[arg(
+        default_value = "0",
+        env = "RPROXY_AUTHRPC_FLASHBLOCKS_PER_BLOCK",
+        help_heading = "authrpc",
+        long("authrpc-flashblocks-per-block"),
+        name("authrpc_flashblocks_per_block"),
+        value_name = "count"
+    )]
+    pub(crate) flashblocks_per_block: u64,
 
     /// duration to keep idle authrpc connections open (0 means no
     /// keep-alive)
@@ -282,6 +311,11 @@ impl ConfigAuthrpc {
             })
         });
 
+        // fcu-lateness measurement
+        if self.flashblocks_per_block > 0 && self.block_time.is_zero() {
+            errs.push(ConfigAuthrpcError::BlockTimeZero);
+        }
+
         // mirroring_peer_urls
         for peer_url in self.mirroring_peer_urls.iter() {
             match Url::parse(peer_url) {
@@ -384,6 +418,16 @@ impl ConfigProxyHttp for ConfigAuthrpc {
     }
 
     #[inline]
+    fn block_time(&self) -> Duration {
+        self.block_time
+    }
+
+    #[inline]
+    fn flashblocks_per_block(&self) -> u64 {
+        self.flashblocks_per_block
+    }
+
+    #[inline]
     fn idle_connection_timeout(&self) -> Duration {
         self.idle_connection_timeout
     }
@@ -473,6 +517,9 @@ impl ConfigProxyHttp for ConfigAuthrpc {
 pub(crate) enum ConfigAuthrpcError {
     #[error("invalid authrpc backend url '{url}': {err}")]
     BackendUrlInvalid { url: String, err: url::ParseError },
+
+    #[error("authrpc block time must be greater than zero when flashblocks-per-block is set")]
+    BlockTimeZero,
 
     #[error("invalid authrpc backend url '{url}': host is missing")]
     BackendUrlMissesHost { url: String },

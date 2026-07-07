@@ -97,18 +97,12 @@ impl ProxyHttpMetrics {
         let labels = LabelsProxy { proxy: proxy_name };
         Self {
             proxy_name,
-            in_flight_client: metrics
-                .http_in_flight_requests_client
-                .get_or_create(&labels)
-                .clone(),
+            in_flight_client: metrics.http_in_flight_requests_client.get_or_create(&labels).clone(),
             in_flight_backend: metrics
                 .http_in_flight_requests_backend
                 .get_or_create(&labels)
                 .clone(),
-            proxy_failure_count: metrics
-                .http_proxy_failure_count
-                .get_or_create(&labels)
-                .clone(),
+            proxy_failure_count: metrics.http_proxy_failure_count.get_or_create(&labels).clone(),
             client_info_family: metrics.client_info.clone(),
             client_info_cache: HashMap::default(),
         }
@@ -238,14 +232,7 @@ where
 
         let metrics = Arc::new(ProxyHttpMetrics::new(P::name(), &shared.metrics));
 
-        Self {
-            id,
-            shared,
-            backend,
-            requests: HashMap::default(),
-            postprocessor,
-            metrics,
-        }
+        Self { id, shared, backend, requests: HashMap::default(), postprocessor, metrics }
     }
 
     pub(crate) async fn run(
@@ -881,7 +868,13 @@ where
                     worker_id,
                 );
 
-                Self::emit_metrics_on_proxy_success(&jrpc, &clnt_req, &bknd_res, metrics.clone());
+                Self::emit_metrics_on_proxy_success(
+                    &inner,
+                    &jrpc,
+                    &clnt_req,
+                    &bknd_res,
+                    metrics.clone(),
+                );
             }
 
             Err(err) => {
@@ -1153,6 +1146,7 @@ where
     }
 
     fn emit_metrics_on_proxy_success(
+        inner: &P,
         jrpc: &JrpcRequestMetaMaybeBatch,
         req: &ProxiedHttpRequest,
         res: &ProxiedHttpResponse,
@@ -1223,6 +1217,75 @@ where
             .http_response_decompressed_size
             .get_or_create_owned(&metric_labels_jrpc)
             .record(res.decompressed_size as i64);
+
+        // measure how late the first fcu-with-attributes lands in each block and
+        // how many flashblocks that costs
+        Self::maybe_emit_fcu_metrics(
+            inner.config().flashblocks_per_block(),
+            inner.config().block_time(),
+            jrpc,
+            req,
+            &metrics,
+        );
+    }
+
+    fn maybe_emit_fcu_metrics(
+        flashblocks_per_block: u64,
+        block_time: Duration,
+        jrpc: &JrpcRequestMetaMaybeBatch,
+        req: &ProxiedHttpRequest,
+        metrics: &Metrics,
+    ) {
+        if flashblocks_per_block == 0 || block_time.is_zero() {
+            return;
+        }
+
+        // only a single fcu carrying payload attributes has a block timestamp
+        let JrpcRequestMetaMaybeBatch::Single(jrpc) = jrpc else {
+            return;
+        };
+        if !jrpc.method_enriched().ends_with("withPayload") {
+            return;
+        }
+
+        let params = jrpc.params();
+        if params.len() < 2 {
+            return;
+        }
+        let Some(block_ts_secs) = params[1]
+            .as_object()
+            .and_then(|attrs| attrs.get("timestamp"))
+            .and_then(|ts| ts.as_str())
+            .and_then(|s| {
+                let hex = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")).unwrap_or(s);
+                i64::from_str_radix(hex, 16).ok()
+            })
+        else {
+            return;
+        };
+
+        // scope to the first fcu-with-attributes per block: only proceed when we
+        // advance the (monotonic) higher timestamp
+        let prev = metrics.fcu_block_timestamp_latest.fetch_max(block_ts_secs, Ordering::Relaxed);
+        if block_ts_secs <= prev {
+            return;
+        }
+
+        let arrival_ms = (req.start().unix_timestamp_nanos() / 1_000_000) as i64;
+        let block_ts_ms = block_ts_secs * 1_000;
+        let block_time_ms = block_time.as_millis() as i64;
+
+        let ms_into_slot = arrival_ms - (block_ts_ms - block_time_ms);
+        let interval_ms = block_time_ms / flashblocks_per_block as i64;
+        let remaining_flashblocks = ((block_ts_ms - arrival_ms) / interval_ms)
+            .clamp(0, flashblocks_per_block as i64) as u64;
+        let reduced_flashblocks = flashblocks_per_block - remaining_flashblocks;
+
+        let labels = LabelsProxy { proxy: P::name() };
+        metrics.fcu_arrival.get_or_create(&labels).record(ms_into_slot);
+        if reduced_flashblocks > 0 {
+            metrics.fcu_reduced_flashblocks.get_or_create(&labels).inc_by(reduced_flashblocks);
+        }
     }
 }
 
@@ -1399,24 +1462,28 @@ where
 
         // Build the inner TCP connector ourselves so we can flip
         // TCP_NODELAY on after each connect
-        let tcp_nodelay = actix_tls::connect::Connector::new(
-            actix_tls::connect::Resolver::default(),
-        )
-        .service()
-        .map(|conn: actix_tls::connect::Connection<awc::http::Uri, tokio::net::TcpStream>| {
-            // Mirror the client leg (ConnectionGuard::on_connect): fail open on
-            // a set_nodelay error, but log it. A silent failure here would
-            // quietly reintroduce the Nagle/DELACK tail with no signal — most
-            // relevant if the backend ever moves off loopback.
-            if let Err(err) = conn.io_ref().set_nodelay(true) {
-                debug!(
-                    proxy = P::name(),
-                    error = ?err,
-                    "Failed to set TCP_NODELAY on backend connection",
+        let tcp_nodelay =
+            actix_tls::connect::Connector::new(actix_tls::connect::Resolver::default())
+                .service()
+                .map(
+                    |conn: actix_tls::connect::Connection<
+                        awc::http::Uri,
+                        tokio::net::TcpStream,
+                    >| {
+                        // Mirror the client leg (ConnectionGuard::on_connect): fail open on
+                        // a set_nodelay error, but log it. A silent failure here would
+                        // quietly reintroduce the Nagle/DELACK tail with no signal — most
+                        // relevant if the backend ever moves off loopback.
+                        if let Err(err) = conn.io_ref().set_nodelay(true) {
+                            debug!(
+                                proxy = P::name(),
+                                error = ?err,
+                                "Failed to set TCP_NODELAY on backend connection",
+                            );
+                        }
+                        conn
+                    },
                 );
-            }
-            conn
-        });
 
         let client = Client::builder()
             .add_default_header((header::HOST, host))

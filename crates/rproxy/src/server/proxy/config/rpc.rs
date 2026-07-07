@@ -384,6 +384,17 @@ impl ConfigProxyHttp for ConfigRpc {
         self.backend_url.parse::<Url>().expect(ALREADY_VALIDATED)
     }
 
+    // fcu-lateness measurement is authrpc-only
+    #[inline]
+    fn block_time(&self) -> Duration {
+        Duration::ZERO
+    }
+
+    #[inline]
+    fn flashblocks_per_block(&self) -> u64 {
+        0
+    }
+
     #[inline]
     fn idle_connection_timeout(&self) -> Duration {
         self.idle_connection_timeout
