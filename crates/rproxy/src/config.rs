@@ -206,68 +206,26 @@ impl Config {
 #[derive(Debug, Error)]
 pub(crate) enum ConfigError {
     #[error("invalid authrpc proxy configuration: {0}")]
-    ConfigAuthrpcInvalid(ConfigAuthrpcError),
+    ConfigAuthrpcInvalid(#[from] ConfigAuthrpcError),
 
     #[error("invalid circuit-breaker configuration: {0}")]
-    ConfigCircuitBreakerInvalid(ConfigCircuitBreakerError),
+    ConfigCircuitBreakerInvalid(#[from] ConfigCircuitBreakerError),
 
     #[error("invalid flashblocks proxy configuration: {0}")]
-    ConfigFlashblocksInvalid(ConfigFlashblocksError),
+    ConfigFlashblocksInvalid(#[from] ConfigFlashblocksError),
 
     #[error("invalid logging configuration: {0}")]
-    ConfigLoggingInvalid(ConfigLoggingError),
+    ConfigLoggingInvalid(#[from] ConfigLoggingError),
 
     #[error("invalid metrics configuration: {0}")]
-    ConfigMetricsInvalid(ConfigMetricsError),
+    ConfigMetricsInvalid(#[from] ConfigMetricsError),
 
     #[error("invalid rpc proxy configuration: {0}")]
-    ConfigRpcInvalid(ConfigRpcError),
+    ConfigRpcInvalid(#[from] ConfigRpcError),
 
     #[error("invalid tls configuration: {0}")]
-    ConfigTlsInvalid(ConfigTlsError),
+    ConfigTlsInvalid(#[from] ConfigTlsError),
 
     #[error("no enabled proxies")]
     NoEnabledProxies,
-}
-
-impl From<ConfigAuthrpcError> for ConfigError {
-    fn from(err: ConfigAuthrpcError) -> Self {
-        Self::ConfigAuthrpcInvalid(err)
-    }
-}
-
-impl From<ConfigCircuitBreakerError> for ConfigError {
-    fn from(err: ConfigCircuitBreakerError) -> Self {
-        Self::ConfigCircuitBreakerInvalid(err)
-    }
-}
-
-impl From<ConfigFlashblocksError> for ConfigError {
-    fn from(err: ConfigFlashblocksError) -> Self {
-        Self::ConfigFlashblocksInvalid(err)
-    }
-}
-
-impl From<ConfigLoggingError> for ConfigError {
-    fn from(err: ConfigLoggingError) -> Self {
-        Self::ConfigLoggingInvalid(err)
-    }
-}
-
-impl From<ConfigMetricsError> for ConfigError {
-    fn from(err: ConfigMetricsError) -> Self {
-        Self::ConfigMetricsInvalid(err)
-    }
-}
-
-impl From<ConfigRpcError> for ConfigError {
-    fn from(err: ConfigRpcError) -> Self {
-        Self::ConfigRpcInvalid(err)
-    }
-}
-
-impl From<ConfigTlsError> for ConfigError {
-    fn from(err: ConfigTlsError) -> Self {
-        Self::ConfigTlsInvalid(err)
-    }
 }
