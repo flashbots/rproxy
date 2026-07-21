@@ -298,10 +298,7 @@ impl ConfigRpc {
             }
         }
 
-        match errs.len() {
-            0 => None,
-            _ => Some(errs),
-        }
+        (!errs.is_empty()).then_some(errs)
     }
 
     pub(crate) fn preprocess(&mut self) {

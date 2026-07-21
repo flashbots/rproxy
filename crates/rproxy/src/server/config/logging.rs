@@ -29,18 +29,15 @@ pub(crate) struct ConfigLogging {
 }
 
 impl ConfigLogging {
-    pub(crate) fn validate(self) -> Option<Vec<ConfigLoggingError>> {
+    pub(crate) fn validate(&self) -> Option<Vec<ConfigLoggingError>> {
         let mut errs: Vec<ConfigLoggingError> = vec![];
 
         // level
-        let _ = EnvFilter::builder().parse(self.level).map_err(|err| {
+        let _ = EnvFilter::builder().parse(self.level.clone()).map_err(|err| {
             errs.push(ConfigLoggingError::LevelInvalid { err: err.to_string() });
         });
 
-        match errs.len() {
-            0 => None,
-            _ => Some(errs),
-        }
+        (!errs.is_empty()).then_some(errs)
     }
 
     pub(crate) fn setup_logging(&self) {

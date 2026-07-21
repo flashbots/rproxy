@@ -139,60 +139,43 @@ impl Config {
         res
     }
 
-    pub(crate) fn validate(self) -> Option<Vec<ConfigError>> {
+    pub(crate) fn validate(&self) -> Option<Vec<ConfigError>> {
         let mut errs: Vec<ConfigError> = vec![];
 
-        // authrpc proxy
-        if self.rpc.enabled &&
-            let Some(_errs) = self.authrpc.validate()
+        fn collect_errors<E>(errs: &mut Vec<ConfigError>, validation: Option<Vec<E>>)
+        where
+            E: Into<ConfigError>,
         {
-            errs.append(&mut _errs.into_iter().map(|err| err.into()).collect());
+            if let Some(inner) = validation {
+                errs.extend(inner.into_iter().map(Into::into));
+            }
         }
 
-        // circuit-breaker
-        if let Some(_errs) = self.circuit_breaker.validate() {
-            errs.append(&mut _errs.into_iter().map(|err| err.into()).collect());
+        collect_errors(&mut errs, self.circuit_breaker.validate());
+        collect_errors(&mut errs, self.logging.validate());
+        collect_errors(&mut errs, self.metrics.validate());
+
+        if self.authrpc.enabled {
+            collect_errors(&mut errs, self.authrpc.validate());
         }
 
-        // flashblocks proxy
-        if self.flashblocks.enabled &&
-            let Some(_errs) = self.flashblocks.validate()
-        {
-            errs.append(&mut _errs.into_iter().map(|err| err.into()).collect());
+        if self.flashblocks.enabled {
+            collect_errors(&mut errs, self.flashblocks.validate());
         }
 
-        // logging
-        if let Some(_errs) = self.logging.validate() {
-            errs.append(&mut _errs.into_iter().map(|err| err.into()).collect());
+        if self.rpc.enabled {
+            collect_errors(&mut errs, self.rpc.validate());
         }
 
-        // metrics
-        if let Some(_errs) = self.metrics.validate() {
-            errs.append(&mut _errs.into_iter().map(|err| err.into()).collect());
-        }
-
-        // rpc proxy
-        if self.rpc.enabled &&
-            let Some(_errs) = self.rpc.validate()
-        {
-            errs.append(&mut _errs.into_iter().map(|err| err.into()).collect());
-        }
-
-        // tls
-        if (!self.tls.certificate.is_empty() || !self.tls.key.is_empty()) &&
-            let Some(_errs) = self.tls.validate()
-        {
-            errs.append(&mut _errs.into_iter().map(|err| err.into()).collect());
+        if !self.tls.certificate.is_empty() || !self.tls.key.is_empty() {
+            collect_errors(&mut errs, self.tls.validate());
         }
 
         if !self.authrpc.enabled && !self.flashblocks.enabled && !self.rpc.enabled {
             errs.push(ConfigError::NoEnabledProxies);
         }
 
-        match errs.len() {
-            0 => None,
-            _ => Some(errs),
-        }
+        (!errs.is_empty()).then_some(errs)
     }
 
     pub(crate) fn preprocess(&mut self) {
