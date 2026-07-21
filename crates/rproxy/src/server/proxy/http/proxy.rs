@@ -88,7 +88,7 @@ struct ProxyHttpMetrics {
     // on a closed network (authrpc with sequencer/peer-mirror as the only
     // clients in practice). If reused for a public-facing endpoint, gate
     // UA cardinality before calling `get_or_create` to avoid an unbounded
-    // Prometheus series blowup.
+    // Prometheus series blow-up.
     client_info_cache: HashMap<String, Counter>,
 }
 
@@ -97,18 +97,12 @@ impl ProxyHttpMetrics {
         let labels = LabelsProxy { proxy: proxy_name };
         Self {
             proxy_name,
-            in_flight_client: metrics
-                .http_in_flight_requests_client
-                .get_or_create(&labels)
-                .clone(),
+            in_flight_client: metrics.http_in_flight_requests_client.get_or_create(&labels).clone(),
             in_flight_backend: metrics
                 .http_in_flight_requests_backend
                 .get_or_create(&labels)
                 .clone(),
-            proxy_failure_count: metrics
-                .http_proxy_failure_count
-                .get_or_create(&labels)
-                .clone(),
+            proxy_failure_count: metrics.http_proxy_failure_count.get_or_create(&labels).clone(),
             client_info_family: metrics.client_info.clone(),
             client_info_cache: HashMap::default(),
         }
@@ -238,14 +232,7 @@ where
 
         let metrics = Arc::new(ProxyHttpMetrics::new(P::name(), &shared.metrics));
 
-        Self {
-            id,
-            shared,
-            backend,
-            requests: HashMap::default(),
-            postprocessor,
-            metrics,
-        }
+        Self { id, shared, backend, requests: HashMap::default(), postprocessor, metrics }
     }
 
     pub(crate) async fn run(
@@ -301,12 +288,18 @@ where
             .shutdown_timeout(shared.config().shutdown_timeout_sec())
             .workers(workers_count);
 
-        let server = if tls.enabled() {
-            server.listen(P::name(), listener, move || {
-                let config = shared.config();
+        // helper macro to create http streams with different inferred types
+        macro_rules! http_stream {
+            (
+                $shared:ident,
+                $max_concurrent_requests_per_worker:ident,
+                $client_connections_count:ident,
+                $metrics:ident
+            ) => {{
+                let config = $shared.config();
 
                 let this =
-                    web::Data::new(Self::new(shared.clone(), max_concurrent_requests_per_worker));
+                    web::Data::new(Self::new($shared.clone(), $max_concurrent_requests_per_worker));
 
                 let app = App::new()
                     .app_data(this)
@@ -315,54 +308,45 @@ where
 
                 let on_connect = ConnectionGuard::on_connect(
                     P::name(),
-                    metrics.clone(),
-                    client_connections_count.clone(),
+                    $metrics.clone(),
+                    $client_connections_count.clone(),
                     config.keepalive_interval(),
                 );
 
-                let h1 = actix_http::HttpService::build()
+                actix_http::HttpService::build()
                     .client_disconnect_timeout(Duration::from_millis(1000)) // same as in HttpServer
                     .keep_alive(config.keepalive_interval())
                     .on_connect_ext(move |io: &_, ext: _| {
                         (on_connect)(io as &dyn std::any::Any, ext)
                     })
-                    .h1(actix_service::map_config(app, |_| AppConfig::default()));
+                    .h1(actix_service::map_config(app, |_| AppConfig::default()))
+            }};
+        }
 
-                let cert = tls.certificate().clone();
-                let key = tls.key().clone_key();
-                let tls_config = rustls::ServerConfig::builder()
-                    .with_no_client_auth()
-                    .with_single_cert(cert, key)
-                    .unwrap(); // safety: verified on start
-                h1.rustls_0_23(tls_config)
+        let server = if tls.enabled() {
+            server.listen(P::name(), listener, move || {
+                http_stream!(
+                    shared,
+                    max_concurrent_requests_per_worker,
+                    client_connections_count,
+                    metrics
+                )
+                .rustls_0_23(
+                    rustls::ServerConfig::builder()
+                        .with_no_client_auth()
+                        .with_single_cert(tls.certificate().clone(), tls.key().clone_key())
+                        .unwrap(), // safety: verified on start
+                )
             })
         } else {
             server.listen(P::name(), listener, move || {
-                let config = shared.config();
-
-                let this =
-                    web::Data::new(Self::new(shared.clone(), max_concurrent_requests_per_worker));
-
-                let app = App::new()
-                    .app_data(this)
-                    .wrap(NormalizePath::new(TrailingSlash::Trim))
-                    .default_service(web::route().to(Self::receive));
-
-                let on_connect = ConnectionGuard::on_connect(
-                    P::name(),
-                    metrics.clone(),
-                    client_connections_count.clone(),
-                    config.keepalive_interval(),
-                );
-
-                let h1 = actix_http::HttpService::build()
-                    .client_disconnect_timeout(Duration::from_millis(1000)) // same as in HttpServer
-                    .keep_alive(config.keepalive_interval())
-                    .on_connect_ext(move |io: &_, ext: _| {
-                        (on_connect)(io as &dyn std::any::Any, ext)
-                    })
-                    .h1(actix_service::map_config(app, |_| AppConfig::default()));
-                h1.tcp()
+                http_stream!(
+                    shared,
+                    max_concurrent_requests_per_worker,
+                    client_connections_count,
+                    metrics
+                )
+                .tcp()
             })
         };
 
@@ -1399,24 +1383,28 @@ where
 
         // Build the inner TCP connector ourselves so we can flip
         // TCP_NODELAY on after each connect
-        let tcp_nodelay = actix_tls::connect::Connector::new(
-            actix_tls::connect::Resolver::default(),
-        )
-        .service()
-        .map(|conn: actix_tls::connect::Connection<awc::http::Uri, tokio::net::TcpStream>| {
-            // Mirror the client leg (ConnectionGuard::on_connect): fail open on
-            // a set_nodelay error, but log it. A silent failure here would
-            // quietly reintroduce the Nagle/DELACK tail with no signal — most
-            // relevant if the backend ever moves off loopback.
-            if let Err(err) = conn.io_ref().set_nodelay(true) {
-                debug!(
-                    proxy = P::name(),
-                    error = ?err,
-                    "Failed to set TCP_NODELAY on backend connection",
+        let tcp_nodelay =
+            actix_tls::connect::Connector::new(actix_tls::connect::Resolver::default())
+                .service()
+                .map(
+                    |conn: actix_tls::connect::Connection<
+                        awc::http::Uri,
+                        tokio::net::TcpStream,
+                    >| {
+                        // Mirror the client leg (ConnectionGuard::on_connect): fail open on
+                        // a set_nodelay error, but log it. A silent failure here would
+                        // quietly reintroduce the Nagle/DELACK tail with no signal — most
+                        // relevant if the backend ever moves off loopback.
+                        if let Err(err) = conn.io_ref().set_nodelay(true) {
+                            debug!(
+                                proxy = P::name(),
+                                error = ?err,
+                                "Failed to set TCP_NODELAY on backend connection",
+                            );
+                        }
+                        conn
+                    },
                 );
-            }
-            conn
-        });
 
         let client = Client::builder()
             .add_default_header((header::HOST, host))
