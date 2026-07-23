@@ -254,6 +254,20 @@ pub(crate) struct ConfigRpc {
         value_name = "seconds"
     )]
     pub(crate) shutdown_timeout_sec: u64,
+
+    #[cfg(target_os = "linux")]
+    /// cpus to pin rpc proxy worker threads to
+    #[arg(
+        action = clap::ArgAction::Append,
+        env = "RPROXY_RPC_WORKER_CPU_AFFINITY",
+        help_heading = "rpc",
+        long("rpc-worker-cpu-affinity"),
+        name("rpc_worker_cpu_affinity"),
+        value_delimiter = ',',
+        value_name = "ids",
+        value_parser = crate::server::proxy::config::parsers::linux::CpuRangeParser{}
+    )]
+    pub(crate) worker_cpu_affinity: Vec<(usize, usize)>,
 }
 
 impl ConfigRpc {
@@ -462,6 +476,12 @@ impl ConfigProxyHttp for ConfigRpc {
     #[inline]
     fn shutdown_timeout_sec(&self) -> u64 {
         self.shutdown_timeout_sec
+    }
+
+    #[cfg(target_os = "linux")]
+    #[inline]
+    fn worker_cpu_affinity(&self) -> Vec<usize> {
+        crate::utils::cpus_from_ranges(&self.worker_cpu_affinity)
     }
 }
 

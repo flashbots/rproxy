@@ -24,6 +24,9 @@ pub(crate) trait ConfigProxyHttp: Clone + Send + Unpin + 'static {
     fn prealloacated_request_buffer_size(&self) -> usize;
     fn prealloacated_response_buffer_size(&self) -> usize;
     fn shutdown_timeout_sec(&self) -> u64;
+
+    #[cfg(target_os = "linux")]
+    fn worker_cpu_affinity(&self) -> Vec<usize>;
 }
 
 // ConfigProxyHttpMirroringStrategy ------------------------------------

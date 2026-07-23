@@ -15,3 +15,8 @@ pub(crate) use utils_op_stack::*;
 
 mod utils_tls;
 pub(crate) use utils_tls::*;
+
+#[cfg(target_os = "linux")]
+mod utils_linux;
+#[cfg(target_os = "linux")]
+pub(crate) use utils_linux::*;

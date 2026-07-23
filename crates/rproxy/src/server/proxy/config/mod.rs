@@ -7,6 +7,8 @@ pub(crate) use circuit_breaker::{ConfigCircuitBreaker, ConfigCircuitBreakerError
 mod flashblocks;
 pub(crate) use flashblocks::{ConfigFlashblocks, ConfigFlashblocksError};
 
+mod parsers;
+
 mod rpc;
 pub(crate) use rpc::{ConfigRpc, ConfigRpcError};
 

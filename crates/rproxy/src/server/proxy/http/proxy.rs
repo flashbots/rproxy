@@ -1,5 +1,6 @@
 use std::{
     borrow::Cow,
+    cmp::min,
     fmt::Debug,
     marker::PhantomData,
     mem,
@@ -65,98 +66,6 @@ use crate::{
     },
     utils::{Loggable, decompress, is_hop_by_hop_header, raw_transaction_to_hash},
 };
-
-// ProxyHttpMetrics ----------------------------------------------------
-
-// Per-worker cached metric handles + UA-counter cache, bundled so the hot
-// path doesn't re-resolve them via `Family::get_or_create` per request.
-// Held behind `Arc` on `ProxyHttp` so cloning a handle to span an `await`
-// is one ref-count bump — `scc::HashMap::clone` is a deep iter+reinsert,
-// so this struct deliberately does not implement `Clone`.
-struct ProxyHttpMetrics {
-    proxy_name: &'static str,
-    in_flight_client: Gauge,
-    in_flight_backend: Gauge,
-    proxy_failure_count: Counter,
-    client_info_family: prometheus_client::metrics::family::Family<LabelsProxyClientInfo, Counter>,
-
-    // Per-worker cache of (user_agent -> Counter). Lookup is `&str`-keyed
-    // (no allocation on hit).
-    //
-    // SAFETY: the `user_agent` label is client-controlled and therefore
-    // unbounded in principle. This metric is intended only for endpoints
-    // on a closed network (authrpc with sequencer/peer-mirror as the only
-    // clients in practice). If reused for a public-facing endpoint, gate
-    // UA cardinality before calling `get_or_create` to avoid an unbounded
-    // Prometheus series blow-up.
-    client_info_cache: HashMap<String, Counter>,
-}
-
-impl ProxyHttpMetrics {
-    fn new(proxy_name: &'static str, metrics: &Arc<Metrics>) -> Self {
-        let labels = LabelsProxy { proxy: proxy_name };
-        Self {
-            proxy_name,
-            in_flight_client: metrics.http_in_flight_requests_client.get_or_create(&labels).clone(),
-            in_flight_backend: metrics
-                .http_in_flight_requests_backend
-                .get_or_create(&labels)
-                .clone(),
-            proxy_failure_count: metrics.http_proxy_failure_count.get_or_create(&labels).clone(),
-            client_info_family: metrics.client_info.clone(),
-            client_info_cache: HashMap::default(),
-        }
-    }
-
-    fn inc_in_flight_client(&self) {
-        self.in_flight_client.inc();
-    }
-
-    fn dec_in_flight_client(&self) {
-        self.in_flight_client.dec();
-    }
-
-    fn inc_in_flight_backend(&self) {
-        self.in_flight_backend.inc();
-    }
-
-    fn dec_in_flight_backend(&self) {
-        self.in_flight_backend.dec();
-    }
-
-    fn record_proxy_failure(&self) {
-        self.proxy_failure_count.inc();
-    }
-
-    fn bump_client_info(&self, user_agent: &str) {
-        // Hot path: read-only lookup keyed by &str (no allocation).
-        // Cold path: allocate the owned String key and resolve the counter
-        // from the metrics family exactly once per worker per distinct UA.
-        if let Some(entry) = self.client_info_cache.read_sync(user_agent, |_, c| c.clone()) {
-            entry.inc();
-        } else {
-            let counter = self
-                .client_info_family
-                .get_or_create(&LabelsProxyClientInfo {
-                    proxy: self.proxy_name,
-                    user_agent: user_agent.to_string(),
-                })
-                .clone();
-            counter.inc();
-            // Soft cap on the *cache* size only. This bounds the per-worker
-            // lookup map, NOT the Prometheus series: `get_or_create` above
-            // already ran unconditionally, so a hostile/varied UA stream past
-            // the cap still creates one series per distinct UA (and re-resolves
-            // it every request, uncached). Safe here only because the closed
-            // authrpc network keeps UA cardinality tiny — see the SAFETY note
-            // on `client_info_cache`. To actually bound cardinality on a
-            // public endpoint, gate `get_or_create` itself.
-            if self.client_info_cache.len() < 100 {
-                let _ = self.client_info_cache.insert_sync(user_agent.to_string(), counter);
-            }
-        }
-    }
-}
 
 // ProxyHttp -----------------------------------------------------------
 
@@ -257,10 +166,23 @@ where
             }
         };
 
-        let workers_count =
-            std::cmp::min(PARALLELISM.to_static(), config.backend_max_concurrent_requests());
+        #[cfg(target_os = "linux")]
+        let (worker_cpu_affinity, worker_cpu_affinity_idx) =
+            { (Arc::new(config.worker_cpu_affinity()), Arc::new(AtomicUsize::new(0))) };
+
+        let workers_count = {
+            let mut workers_count = PARALLELISM.to_static();
+            workers_count = min(config.backend_max_concurrent_requests(), workers_count);
+            #[cfg(target_os = "linux")]
+            if !worker_cpu_affinity.is_empty() {
+                workers_count = min(worker_cpu_affinity.len(), workers_count);
+            }
+            workers_count
+        };
+
         let max_concurrent_requests_per_worker =
             config.backend_max_concurrent_requests() / workers_count;
+
         if workers_count * max_concurrent_requests_per_worker <
             config.backend_max_concurrent_requests()
         {
@@ -325,6 +247,32 @@ where
 
         let server = if tls.enabled() {
             server.listen(P::name(), listener, move || {
+                #[cfg(target_os = "linux")]
+                if !worker_cpu_affinity.is_empty() &&
+                    let idx =
+                        worker_cpu_affinity_idx.fetch_add(1, Ordering::Relaxed) % workers_count &&
+                    let Some(cpu) = worker_cpu_affinity.get(idx).copied()
+                {
+                    _ = crate::utils::pin_current_thread_to_cpu(cpu)
+                        .inspect_err(|err| {
+                            warn!(
+                                proxy = P::name(),
+                                error = ?err,
+                                thread = std::thread::current().name(),
+                                cpu = cpu,
+                                "Failed to pin worker thread to cpu",
+                            )
+                        })
+                        .inspect(|_| {
+                            info!(
+                                proxy = P::name(),
+                                thread = std::thread::current().name(),
+                                cpu = cpu,
+                                "Pinned worker thread to cpu",
+                            )
+                        });
+                }
+
                 http_stream!(
                     shared,
                     max_concurrent_requests_per_worker,
@@ -340,6 +288,32 @@ where
             })
         } else {
             server.listen(P::name(), listener, move || {
+                #[cfg(target_os = "linux")]
+                if !worker_cpu_affinity.is_empty() &&
+                    let idx =
+                        worker_cpu_affinity_idx.fetch_add(1, Ordering::Relaxed) % workers_count &&
+                    let Some(cpu) = worker_cpu_affinity.get(idx).copied()
+                {
+                    _ = crate::utils::pin_current_thread_to_cpu(cpu)
+                        .inspect_err(|err| {
+                            warn!(
+                                proxy = P::name(),
+                                error = ?err,
+                                thread = std::thread::current().name(),
+                                cpu = cpu,
+                                "Failed to pin worker thread to cpu",
+                            )
+                        })
+                        .inspect(|_| {
+                            info!(
+                                proxy = P::name(),
+                                thread = std::thread::current().name(),
+                                cpu = cpu,
+                                "Pinned worker thread to cpu",
+                            )
+                        });
+                }
+
                 http_stream!(
                     shared,
                     max_concurrent_requests_per_worker,
@@ -808,7 +782,7 @@ where
                 worker_id = %self.id,
                 "Proxied http response for unmatching request",
             );
-            return
+            return;
         };
 
         // hand over to postprocessor asynchronously so that we can return the
@@ -1022,7 +996,7 @@ where
                 for item in batch {
                     sanitise(item);
                 }
-                return
+                return;
             }
 
             let Some(message) = message.as_object_mut() else { return };
@@ -1042,13 +1016,13 @@ where
                     None => return,
                 }
                 .as_array_mut() else {
-                    return
+                    return;
                 };
 
                 match method.as_str() {
                     "engine_forkchoiceUpdatedV3" => {
                         if params.len() < 2 {
-                            return
+                            return;
                         }
 
                         let Some(execution_payload) = params[1].as_object_mut() else { return };
@@ -1058,7 +1032,7 @@ where
                             None => return,
                         }
                         .as_array_mut() else {
-                            return
+                            return;
                         };
 
                         for transaction in transactions {
@@ -1068,7 +1042,7 @@ where
 
                     "engine_newPayloadV4" => {
                         if params.is_empty() {
-                            return
+                            return;
                         }
 
                         let Some(execution_payload) = params[0].as_object_mut() else { return };
@@ -1078,7 +1052,7 @@ where
                             None => return,
                         }
                         .as_array_mut() else {
-                            return
+                            return;
                         };
 
                         for transaction in transactions {
@@ -1088,7 +1062,7 @@ where
 
                     "eth_sendBundle" => {
                         if params.is_empty() {
-                            return
+                            return;
                         }
 
                         let Some(execution_payload) = params[0].as_object_mut() else { return };
@@ -1098,7 +1072,7 @@ where
                             None => return,
                         }
                         .as_array_mut() else {
-                            return
+                            return;
                         };
 
                         for transaction in transactions {
@@ -1120,7 +1094,7 @@ where
                 Some(result) => result.as_object_mut(),
                 None => return,
             }) else {
-                return
+                return;
             };
 
             if let Some(execution_payload) = result.get_mut("executionPayload") &&
@@ -2097,4 +2071,96 @@ impl ProxiedHttpResponse {
 struct ProxiedHttpCombo {
     req: ProxiedHttpRequest,
     res: ProxiedHttpResponse,
+}
+
+// ProxyHttpMetrics ----------------------------------------------------
+
+// Per-worker cached metric handles + UA-counter cache, bundled so the hot
+// path doesn't re-resolve them via `Family::get_or_create` per request.
+// Held behind `Arc` on `ProxyHttp` so cloning a handle to span an `await`
+// is one ref-count bump — `scc::HashMap::clone` is a deep iter+reinsert,
+// so this struct deliberately does not implement `Clone`.
+struct ProxyHttpMetrics {
+    proxy_name: &'static str,
+    in_flight_client: Gauge,
+    in_flight_backend: Gauge,
+    proxy_failure_count: Counter,
+    client_info_family: prometheus_client::metrics::family::Family<LabelsProxyClientInfo, Counter>,
+
+    // Per-worker cache of (user_agent -> Counter). Lookup is `&str`-keyed
+    // (no allocation on hit).
+    //
+    // SAFETY: the `user_agent` label is client-controlled and therefore
+    // unbounded in principle. This metric is intended only for endpoints
+    // on a closed network (authrpc with sequencer/peer-mirror as the only
+    // clients in practice). If reused for a public-facing endpoint, gate
+    // UA cardinality before calling `get_or_create` to avoid an unbounded
+    // Prometheus series blow-up.
+    client_info_cache: HashMap<String, Counter>,
+}
+
+impl ProxyHttpMetrics {
+    fn new(proxy_name: &'static str, metrics: &Arc<Metrics>) -> Self {
+        let labels = LabelsProxy { proxy: proxy_name };
+        Self {
+            proxy_name,
+            in_flight_client: metrics.http_in_flight_requests_client.get_or_create(&labels).clone(),
+            in_flight_backend: metrics
+                .http_in_flight_requests_backend
+                .get_or_create(&labels)
+                .clone(),
+            proxy_failure_count: metrics.http_proxy_failure_count.get_or_create(&labels).clone(),
+            client_info_family: metrics.client_info.clone(),
+            client_info_cache: HashMap::default(),
+        }
+    }
+
+    fn inc_in_flight_client(&self) {
+        self.in_flight_client.inc();
+    }
+
+    fn dec_in_flight_client(&self) {
+        self.in_flight_client.dec();
+    }
+
+    fn inc_in_flight_backend(&self) {
+        self.in_flight_backend.inc();
+    }
+
+    fn dec_in_flight_backend(&self) {
+        self.in_flight_backend.dec();
+    }
+
+    fn record_proxy_failure(&self) {
+        self.proxy_failure_count.inc();
+    }
+
+    fn bump_client_info(&self, user_agent: &str) {
+        // Hot path: read-only lookup keyed by &str (no allocation).
+        // Cold path: allocate the owned String key and resolve the counter
+        // from the metrics family exactly once per worker per distinct UA.
+        if let Some(entry) = self.client_info_cache.read_sync(user_agent, |_, c| c.clone()) {
+            entry.inc();
+        } else {
+            let counter = self
+                .client_info_family
+                .get_or_create(&LabelsProxyClientInfo {
+                    proxy: self.proxy_name,
+                    user_agent: user_agent.to_string(),
+                })
+                .clone();
+            counter.inc();
+            // Soft cap on the *cache* size only. This bounds the per-worker
+            // lookup map, NOT the Prometheus series: `get_or_create` above
+            // already ran unconditionally, so a hostile/varied UA stream past
+            // the cap still creates one series per distinct UA (and re-resolves
+            // it every request, uncached). Safe here only because the closed
+            // authrpc network keeps UA cardinality tiny — see the SAFETY note
+            // on `client_info_cache`. To actually bound cardinality on a
+            // public endpoint, gate `get_or_create` itself.
+            if self.client_info_cache.len() < 100 {
+                let _ = self.client_info_cache.insert_sync(user_agent.to_string(), counter);
+            }
+        }
+    }
 }

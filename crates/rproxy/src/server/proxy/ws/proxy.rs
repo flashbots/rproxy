@@ -131,7 +131,21 @@ where
             }
         };
 
-        let workers_count = PARALLELISM.to_static();
+        #[cfg(target_os = "linux")]
+        let (worker_cpu_affinity, worker_cpu_affinity_idx) = {
+            use std::sync::atomic::AtomicUsize;
+            (Arc::new(config.worker_cpu_affinity()), Arc::new(AtomicUsize::new(0)))
+        };
+
+        let workers_count = {
+            #[allow(unused)]
+            let mut workers_count = PARALLELISM.to_static();
+            #[cfg(target_os = "linux")]
+            if !worker_cpu_affinity.is_empty() {
+                workers_count = std::cmp::min(worker_cpu_affinity.len(), workers_count);
+            }
+            workers_count
+        };
 
         let shared = ProxyWsSharedState::<C, P>::new(config.clone(), &metrics);
         let client_connections_count = shared.client_connections_count.clone();
@@ -147,6 +161,31 @@ where
         );
 
         let server = HttpServer::new(move || {
+            #[cfg(target_os = "linux")]
+            if !worker_cpu_affinity.is_empty() &&
+                let idx = worker_cpu_affinity_idx.fetch_add(1, Ordering::Relaxed) % workers_count &&
+                let Some(cpu) = worker_cpu_affinity.get(idx).copied()
+            {
+                _ = crate::utils::pin_current_thread_to_cpu(cpu)
+                    .inspect_err(|err| {
+                        warn!(
+                            proxy = P::name(),
+                            error = ?err,
+                            thread = std::thread::current().name(),
+                            cpu = cpu,
+                            "Failed to pin worker thread to cpu",
+                        )
+                    })
+                    .inspect(|_| {
+                        info!(
+                            proxy = P::name(),
+                            thread = std::thread::current().name(),
+                            cpu = cpu,
+                            "Pinned worker thread to cpu",
+                        )
+                    });
+            }
+
             let this = web::Data::new(Self::new(
                 shared.clone(),
                 worker_canceller.clone(),
