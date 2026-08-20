@@ -9,6 +9,8 @@ RUN rustup component add \
     clippy \
     rustfmt
 
+RUN cargo install cargo-auditable --version 0.7.5 --locked
+
 ENV CARGO_HOME=/usr/local/cargo
 
 FROM base AS builder

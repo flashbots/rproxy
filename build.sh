@@ -26,7 +26,7 @@ export CARGO_TARGET_$( echo "${TARGET}" | tr '[:lower:]' '[:upper:]' | tr '-' '_
   -C target-feature=+crt-static \
 "
 
-cargo build --package rproxy \
+cargo auditable build --package rproxy \
   --features ${FEATURES} \
   --locked \
   --release \
