@@ -26,6 +26,11 @@ export CARGO_TARGET_$( echo "${TARGET}" | tr '[:lower:]' '[:upper:]' | tr '-' '_
   -C target-feature=+crt-static \
 "
 
+if ! command -v cargo-auditable >/dev/null 2>&1; then
+  echo "cargo-auditable is required. Install with: cargo install cargo-auditable --version 0.7.5 --locked" >&2
+  exit 1
+fi
+
 cargo auditable build --package rproxy \
   --features ${FEATURES} \
   --locked \
