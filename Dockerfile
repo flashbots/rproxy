@@ -11,6 +11,8 @@ RUN rustup component add \
 
 ENV CARGO_HOME=/usr/local/cargo
 
+RUN cargo install cargo-auditable --version 0.7.5 --locked
+
 FROM base AS builder
 
 WORKDIR /app

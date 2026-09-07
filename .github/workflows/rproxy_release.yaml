@@ -90,6 +90,8 @@ jobs:
             libssl-dev \
             pkg-config
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          . $HOME/.cargo/env
+          cargo install cargo-auditable --version 0.7.5 --locked
 
       - name: checkout the repository
         uses: actions/checkout@v4
